@@ -40,15 +40,14 @@ func TestRestartRemovesOrphanedTemporaryFiles(t *testing.T) {
 	require.NoError(t, err, "orphaned temporary files retained: %v %v", files, err)
 	require.Len(t, files, 0, "orphaned temporary files retained: %v %v", files, err)
 	{
-		info, err := os.Stat(filepath.Join(root, ".scope-key"))
-		require.NoError(t, err, "persistent scope key removed")
-		require.EqualValues(t, 32, info.Size(), "persistent scope key removed")
+		_, err := os.Stat(filepath.Join(root, ".scope-key"))
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 }
 
 func testLease(t *testing.T, s *Store, name string) *Lease {
 	t.Helper()
-	l, err := s.Acquire(context.Background(), s.Key(name, "credential"))
+	l, err := s.Acquire(context.Background(), s.Key(name))
 	require.NoError(t, err)
 	return l
 }

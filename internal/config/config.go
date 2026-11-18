@@ -61,6 +61,8 @@ type Config struct {
 	MaxRefsBytes              int64               `json:"max_refs_bytes" yaml:"max_refs_bytes"`
 	MaxResponseBytes          int64               `json:"max_response_bytes" yaml:"max_response_bytes"`
 	MaxCacheBytes             int64               `json:"max_cache_bytes" yaml:"max_cache_bytes"`
+	RepackPackThreshold       int                 `json:"repack_pack_threshold" yaml:"repack_pack_threshold"`
+	RepackTimeout             string              `json:"repack_timeout" yaml:"repack_timeout"`
 	MaxConcurrentGit          int                 `json:"max_concurrent_git" yaml:"max_concurrent_git"`
 	MaxConcurrentRequests     int                 `json:"max_concurrent_requests" yaml:"max_concurrent_requests"`
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
@@ -221,7 +223,7 @@ func (c *Config) validateLimits() error {
 	for _, timeout := range []struct {
 		p *string
 		d string
-	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "2m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}} {
+	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "2m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}, {&c.RepackTimeout, "2m"}} {
 		if *timeout.p == "" {
 			*timeout.p = timeout.d
 		}
@@ -229,6 +231,12 @@ func (c *Config) validateLimits() error {
 		if err != nil || v <= 0 {
 			return fmt.Errorf("timeouts must be positive Go durations")
 		}
+	}
+	if c.RepackPackThreshold == 0 {
+		c.RepackPackThreshold = 32
+	}
+	if c.RepackPackThreshold < 2 {
+		return fmt.Errorf("repack_pack_threshold must be at least 2")
 	}
 	return nil
 }

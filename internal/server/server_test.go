@@ -66,15 +66,25 @@ func TestDirectFetchRechecksAuthorizationOnCacheHit(t *testing.T) {
 	require.EqualValues(t, localBefore, s.local.Load(), "revoked authorization served cached data: %d %s", r.StatusCode, denied)
 }
 
-func TestCredentialIsolation(t *testing.T) {
+func TestCredentialsShareObjectsAndKeepAuthorizationIndependent(t *testing.T) {
 	f := newFixture(t)
 	s, h := newCDN(t, f, nil)
-	for _, authorization := range []string{testAuthorization, "Bearer second-user"} {
+	for i, authorization := range []string{testAuthorization, "Bearer second-user"} {
 		r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), authorization, nil)
-		require.EqualValues(t, "MISS", r.Header.Get("X-GitCDN-Cache-Status"), "credentials shared cache: %v", r.Header)
+		expected := "HIT"
+		if i == 0 {
+			expected = "MISS"
+		}
+		require.Equal(t, expected, r.Header.Get("X-GitCDN-Cache-Status"))
 		responseBody(t, r)
 	}
-	require.EqualValues(t, 2, s.hydrated.Load(), "different credentials did not hydrate isolated stores")
+	require.EqualValues(t, 1, s.hydrated.Load())
+	require.EqualValues(t, 1, s.store.Stats().Entries)
+	require.EqualValues(t, 2, f.probes.Load())
+	r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), "Bearer denied-user", nil)
+	require.Equal(t, http.StatusUnauthorized, r.StatusCode)
+	r.Body.Close()
+	require.EqualValues(t, 2, s.local.Load())
 }
 
 func TestDeletedRefOIDGoesToOrigin(t *testing.T) {

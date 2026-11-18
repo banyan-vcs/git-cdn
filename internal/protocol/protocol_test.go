@@ -29,6 +29,27 @@ func TestUnsupportedObjectSelectionIsNeverLocal(t *testing.T) {
 	require.False(t, f.Supported, "SHA-256 request must be forwarded")
 }
 
+func TestFullFetchOnlyReconcilesCompleteInitialRequests(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	for _, test := range []struct {
+		name string
+		args []string
+		full bool
+	}{
+		{"clone", []string{"want " + oid, "done"}, true},
+		{"incremental", []string{"want " + oid, "have " + oid, "done"}, false},
+		{"negotiation", []string{"want " + oid, "wait-for-done"}, false},
+		{"partial", []string{"want " + oid, "filter blob:none", "done"}, false},
+		{"shallow", []string{"want " + oid, "deepen 1", "done"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fetch, err := ParseFetch(request(test.args...))
+			require.NoError(t, err)
+			require.Equal(t, test.full, fetch.FullFetch())
+		})
+	}
+}
+
 func TestMalformedMessagesAndRefsAreRejected(t *testing.T) {
 	for _, data := range []string{"", "000", "0003", "zzzz", "ffff", "0001", "0012command=fetch\n0001", "0000trailing"} {
 		{

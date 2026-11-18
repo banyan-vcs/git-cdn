@@ -2,8 +2,6 @@ package cache
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -20,7 +18,6 @@ type Store struct {
 	Root          string
 	Tmp           string
 	Git           *nativegit.Runner
-	secret        []byte
 	lock          *os.File
 	mu            sync.Mutex
 	entries       map[string]*entry
@@ -29,9 +26,19 @@ type Store struct {
 	reservedBytes int64
 	evictions     uint64
 	evictedBytes  uint64
+	repack        RepackOptions
+	repackQueue   chan string
+	maintenance   context.Context
+	cancel        context.CancelFunc
+	workers       sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
+	repacks       uint64
+	repackFailed  uint64
+	repackSkipped uint64
 }
 
-func Open(root string, git *nativegit.Runner, maxBytes int64) (*Store, error) {
+func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackOptions) (*Store, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("cache byte limit must be positive")
 	}
@@ -47,6 +54,14 @@ func Open(root string, git *nativegit.Runner, maxBytes int64) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{Root: root, Tmp: filepath.Join(root, "tmp"), Git: git, lock: lock, entries: make(map[string]*entry), maxBytes: maxBytes}
+	s.repack = RepackOptions{PackThreshold: 32, Timeout: 2 * time.Minute}
+	if len(options) > 0 {
+		s.repack = options[0]
+	}
+	if s.repack.PackThreshold < 2 || s.repack.Timeout <= 0 {
+		s.Close()
+		return nil, fmt.Errorf("invalid repack options")
+	}
 	if err = ensureDirectory(s.Tmp); err != nil {
 		s.Close()
 		return nil, err
@@ -64,17 +79,13 @@ func Open(root string, git *nativegit.Runner, maxBytes int64) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
-	secretPath := filepath.Join(root, ".scope-key")
-	s.secret, err = os.ReadFile(secretPath)
-	if os.IsNotExist(err) {
-		s.secret = make([]byte, 32)
-		if _, err = rand.Read(s.secret); err == nil {
-			err = os.WriteFile(secretPath, s.secret, 0600)
-		}
-	}
-	if err != nil || len(s.secret) != 32 {
+	if err := s.migrateLegacy(); err != nil {
 		s.Close()
-		return nil, fmt.Errorf("cannot initialize credential cache scope")
+		return nil, fmt.Errorf("migrate repository caches: %w", err)
+	}
+	if err := os.Remove(filepath.Join(root, ".scope-key")); err != nil && !os.IsNotExist(err) {
+		s.Close()
+		return nil, err
 	}
 	if err := s.loadEntries(); err != nil {
 		s.Close()
@@ -84,18 +95,32 @@ func Open(root string, git *nativegit.Runner, maxBytes int64) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
+	if git != nil {
+		s.maintenance, s.cancel = context.WithCancel(context.Background())
+		s.repackQueue = make(chan string, 64)
+		s.workers.Add(1)
+		for _, e := range s.entries {
+			s.queueRepackLocked(e)
+		}
+		go s.maintain()
+	}
 	return s, nil
 }
 
 func (s *Store) Close() error {
-	return s.lock.Close()
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.workers.Wait()
+		s.closeErr = s.lock.Close()
+	})
+	return s.closeErr
 }
 
-func (s *Store) Key(identity, credential string) string {
-	m := hmac.New(sha256.New, s.secret)
-	m.Write([]byte(credential))
+func (s *Store) Key(identity string) string {
 	identityHash := sha256.Sum256([]byte(identity))
-	return hex.EncodeToString(identityHash[:]) + "/" + hex.EncodeToString(m.Sum(nil))
+	return hex.EncodeToString(identityHash[:])
 }
 
 type Lease struct {
@@ -136,6 +161,10 @@ func (s *Store) Acquire(ctx context.Context, key string) (*Lease, error) {
 }
 
 func (l *Lease) Release() {
+	l.release(true)
+}
+
+func (l *Lease) release(schedule bool) {
 	s := l.store
 	s.mu.Lock()
 	e := l.entry
@@ -157,7 +186,9 @@ func (l *Lease) Release() {
 	if e.users == 0 && e.size == 0 {
 		delete(s.entries, e.key)
 		_ = os.Remove(filepath.Dir(l.Dir))
-		_ = os.Remove(filepath.Dir(filepath.Dir(l.Dir)))
+	}
+	if schedule && e.users == 0 && s.entries[e.key] == e {
+		s.queueRepackLocked(e)
 	}
 	s.mu.Unlock()
 }

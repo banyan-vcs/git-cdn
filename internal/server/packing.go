@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -29,9 +28,8 @@ func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapsh
 	ctx, cancel := context.WithTimeout(r.Context(), s.gitTimeout)
 	defer cancel()
 	headers := s.headers(r)
-	credential, _ := json.Marshal(headers)
 	identity := rt.base.String() + "/" + strings.TrimSuffix(rt.repo, ".git") + ".git:sha1"
-	lease, err := s.store.Acquire(ctx, s.store.Key(identity, string(credential)))
+	lease, err := s.store.Acquire(ctx, s.store.Key(identity))
 	if err != nil {
 		return nil, "", err
 	}
@@ -50,6 +48,11 @@ func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapsh
 	for _, have := range unique(fetch.Haves) {
 		if !lease.Ancestor(ctx, have, roots) {
 			return nil, "", errors.New("have is outside authorized roots")
+		}
+	}
+	if fetch.FullFetch() {
+		if err := lease.SyncRefs(ctx, snapshot); err != nil {
+			return nil, "", err
 		}
 	}
 	if fetch.IncludeTag {
@@ -83,6 +86,11 @@ func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapsh
 		if !tagHit {
 			s.hydrated.Add(1)
 			hit = false
+		}
+		if fetch.FullFetch() && !tagHit {
+			if err := lease.SyncRefs(ctx, snapshot); err != nil {
+				return nil, "", err
+			}
 		}
 	}
 	view, err := lease.View(ctx, snapshot, roots)

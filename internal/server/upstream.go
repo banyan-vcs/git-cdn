@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
@@ -24,6 +25,7 @@ func (s *Server) headers(r *http.Request) [][2]string {
 }
 
 func (s *Server) discover(r *http.Request, rt route) (protocol.Snapshot, *http.Response, error) {
+	observedAt := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), s.authTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, rt.target(rt.repo+"/git-upload-pack").String(), bytes.NewReader(protocol.LSRefsRequest()))
@@ -66,6 +68,7 @@ func (s *Server) discover(r *http.Request, rt route) (protocol.Snapshot, *http.R
 		return protocol.Snapshot{}, nil, err
 	}
 	snapshot, err := protocol.ParseRefs(data)
+	snapshot.ObservedAt = observedAt
 	return snapshot, nil, err
 }
 

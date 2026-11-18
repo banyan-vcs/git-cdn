@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -63,6 +64,7 @@ type Fetch struct {
 	Wants      []string
 	Haves      []string
 	IncludeTag bool
+	Done       bool
 	Supported  bool
 }
 
@@ -156,12 +158,20 @@ func ParseFetch(data []byte) (Fetch, error) {
 			}
 		case line == "include-tag":
 			f.IncludeTag = true
-		case line == "thin-pack", line == "ofs-delta", line == "no-progress", line == "done", line == "wait-for-done":
+		case line == "done":
+			f.Done = true
+		case line == "thin-pack", line == "ofs-delta", line == "no-progress", line == "wait-for-done":
 		default:
 			f.Supported = false
 		}
 	}
 	return f, fmt.Errorf("request must end with flush")
+}
+
+// FullFetch identifies initial unfiltered requests. Git does not distinguish a
+// clone from a fetch into an empty repository on the wire.
+func (f Fetch) FullFetch() bool {
+	return f.Command == "fetch" && f.Supported && f.Done && len(f.Haves) == 0 && len(f.Wants) > 0
 }
 
 type Ref struct {
@@ -172,7 +182,8 @@ type Ref struct {
 }
 
 type Snapshot struct {
-	Refs []Ref
+	Refs       []Ref
+	ObservedAt time.Time
 }
 
 func RefName(name string) bool {

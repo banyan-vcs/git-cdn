@@ -34,6 +34,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "gitcdn_local_requests_total %d\ngitcdn_hydrations_total %d\ngitcdn_passthrough_requests_total %d\ngitcdn_auth_denied_total %d\n", s.local.Load(), s.hydrated.Load(), s.proxied.Load(), s.authDenied.Load())
 		stats := s.store.Stats()
 		fmt.Fprintf(w, "gitcdn_cache_bytes %d\ngitcdn_cache_max_bytes %d\ngitcdn_cache_reserved_bytes %d\ngitcdn_cache_entries %d\ngitcdn_cache_evictions_total %d\ngitcdn_cache_evicted_bytes_total %d\n", stats.Bytes, stats.MaxBytes, stats.ReservedBytes, stats.Entries, stats.Evictions, stats.EvictedBytes)
+		fmt.Fprintf(w, "gitcdn_repacks_total %d\ngitcdn_repack_failures_total %d\ngitcdn_repack_skipped_total %d\n", stats.Repacks, stats.RepackFailed, stats.RepackSkipped)
 		fmt.Fprintf(w, "gitcdn_active_requests %d\ngitcdn_rejected_requests_total %d\ngitcdn_temp_response_bytes %d\ngitcdn_temp_response_max_bytes %d\n", s.requests.active(), s.rejected.Load(), s.responses.bytes(), s.config.MaxTempResponseBytes)
 		return
 	}

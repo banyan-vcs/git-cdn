@@ -7,18 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
 var ErrCapacity = errors.New("repository cache capacity unavailable")
 
 type entry struct {
-	key      string
-	gate     chan struct{}
-	users    int
-	size     int64
-	accessed time.Time
+	key            string
+	gate           chan struct{}
+	users          int
+	size           int64
+	accessed       time.Time
+	repackPending  bool
+	refsObservedAt time.Time
 }
 
 type Stats struct {
@@ -28,12 +29,15 @@ type Stats struct {
 	Entries       int
 	Evictions     uint64
 	EvictedBytes  uint64
+	Repacks       uint64
+	RepackFailed  uint64
+	RepackSkipped uint64
 }
 
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes}
+	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped}
 }
 
 func digest(s string) bool {
@@ -49,8 +53,7 @@ func digest(s string) bool {
 }
 
 func validKey(key string) bool {
-	parts := strings.Split(key, "/")
-	return len(parts) == 2 && digest(parts[0]) && digest(parts[1])
+	return digest(key)
 }
 
 // Count logical regular-file bytes without following links outside a managed cache.
@@ -94,30 +97,21 @@ func (s *Store) loadEntries() error {
 		if !identity.IsDir() || !digest(identity.Name()) {
 			continue
 		}
-		scopes, err := os.ReadDir(filepath.Join(repos, identity.Name()))
+		key := identity.Name()
+		path := filepath.Join(repos, key)
+		size, err := directorySize(path)
 		if err != nil {
 			return err
 		}
-		for _, scope := range scopes {
-			if !scope.IsDir() || !digest(scope.Name()) {
-				continue
-			}
-			key := identity.Name() + "/" + scope.Name()
-			path := filepath.Join(repos, key)
-			size, err := directorySize(path)
-			if err != nil {
-				return err
-			}
-			info, err := os.Stat(filepath.Join(path, ".access"))
-			if os.IsNotExist(err) {
-				info, err = scope.Info()
-			}
-			if err != nil {
-				return err
-			}
-			s.entries[key] = &entry{key: key, gate: make(chan struct{}, 1), size: size, accessed: info.ModTime()}
-			s.usedBytes += size
+		info, err := os.Stat(filepath.Join(path, ".access"))
+		if os.IsNotExist(err) {
+			info, err = identity.Info()
 		}
+		if err != nil {
+			return err
+		}
+		s.entries[key] = &entry{key: key, gate: make(chan struct{}, 1), size: size, accessed: info.ModTime()}
+		s.usedBytes += size
 	}
 	return nil
 }
@@ -137,8 +131,7 @@ func ensureDirectory(path string) error {
 }
 
 func (s *Store) ensureScope(key string) error {
-	parts := strings.Split(key, "/")
-	for _, path := range []string{filepath.Join(s.Root, "repos"), filepath.Join(s.Root, "repos", parts[0]), filepath.Join(s.Root, "repos", key)} {
+	for _, path := range []string{filepath.Join(s.Root, "repos"), filepath.Join(s.Root, "repos", key)} {
 		if err := ensureDirectory(path); err != nil {
 			return err
 		}
@@ -175,7 +168,6 @@ func (s *Store) makeRoomLocked(additional int64) error {
 		s.evictions++
 		s.evictedBytes += uint64(e.size)
 		delete(s.entries, e.key)
-		_ = os.Remove(filepath.Dir(path))
 		if s.usedBytes+s.reservedBytes <= s.maxBytes-additional {
 			return nil
 		}

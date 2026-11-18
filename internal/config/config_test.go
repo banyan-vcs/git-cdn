@@ -56,6 +56,8 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 			require.EqualValues(t, 4<<30, c.MaxTempResponseBytes, "unsafe resource defaults: %+v", c)
 			require.EqualValues(t, "30s", c.WriteIdleTimeout, "unsafe resource defaults: %+v", c)
 			require.EqualValues(t, "10m", c.RequestTimeout, "unsafe resource defaults: %+v", c)
+			require.Equal(t, 32, c.RepackPackThreshold)
+			require.Equal(t, "2m", c.RepackTimeout)
 		})
 	}
 }
@@ -115,6 +117,8 @@ func TestYAMLRejectsAmbiguousAndMalformedConfiguration(t *testing.T) {
 		{"invalid timeout", valid + "fetch_timeout: forever\n"},
 		{"invalid size", valid + "max_request_bytes: -1\n"},
 		{"invalid cache size", valid + "max_cache_bytes: -1\n"},
+		{"invalid repack threshold", valid + "repack_pack_threshold: 1\n"},
+		{"invalid repack timeout", valid + "repack_timeout: 0s\n"},
 		{"TLS pair missing", valid + "tls_cert: server.pem\n"},
 		{"unsafe single URL", "mode: single\nupstream:\n  url: https://user:secret@example.com\n"},
 		{"invalid site ID", "mode: multi\nupstreams:\n  bad/id:\n    url: https://example.com\n"},
