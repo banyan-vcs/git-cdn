@@ -26,7 +26,7 @@ Every fetch selected for local execution performs a fresh upstream ls-refs query
 
 Protocol v2 permits direct OID wants beyond advertised refs. Git upload-pack can serve retained objects that no longer appear in upstream refs, so its configuration switches are not sufficient authorization. The local path accepts current advertised tip/tag/peeled OIDs; other wants are forwarded for the upstream to decide. Haves must be ancestor commits of authorized roots. Relevant tags are checked before include-tag processing.
 
-Cache identity includes the canonical upstream URL, repository path, object format and credential HMAC. Credentials are passed to native Git through request-scoped configuration in the environment, without storing them in remote URLs. Request-specific ref views keep storage refs and stale tags out of response semantics. An alternates view is not an independent ACL: shared Git object stores need an explicit trust boundary.
+Cache identity includes the canonical upstream URL, repository path and object format. All authorized readers of the same repository share objects and a lease; token rotation does not create a new object store. Credentials are passed to native Git through request-scoped configuration in the environment, without storing them in remote URLs. Request-specific ref views keep storage refs and stale tags out of response semantics. Shared storage assumes repository-level Git read access; an alternates view is not an independent ACL for different object visibility domains.
 
 Native Git's [protocol v2 specification](https://git-scm.com/docs/gitprotocol-v2) and [namespace security discussion](https://git-scm.com/docs/gitnamespaces) are the behavioral references. Reproducible [protocol probes](protocol-probes.md) establish the relevant primitives.
 
@@ -35,19 +35,19 @@ Native Git's [protocol v2 specification](https://git-scm.com/docs/gitprotocol-v2
 ```text
 cache/
   .lock
-  .scope-key
-  repos/<repository-hash>/<credential-HMAC>/
+  repos/<repository-hash>/
     .access
     repo.git/
   tmp/
     hydrate-*/
     view-*/
     response-*
+    repack-*/
 ```
 
 The cache is a bare object repository, not a complete branch mirror. `refs/cache/roots/<oid>` retain verified root histories. For a local fetch:
 
-1. Acquire a lease for the repository/credential scope.
+1. Acquire the shared repository lease.
 2. Traverse the wanted roots with `rev-list --objects --missing=error`; a present commit alone does not prove completeness.
 3. If data is missing, initialize staging and fetch exact OIDs with the caller's identity.
 4. Use existing roots and alternates for incremental negotiation only when their dependency graph is intact.
@@ -58,7 +58,11 @@ Fresh caches are published by renaming checked staging. Existing caches install 
 
 The current model stores complete histories for requested roots. It does not import arbitrary external shallow/promisor repositories or resume incomplete packs. Filtered/shallow client requests go upstream. Server-side native lazy fetching is disabled. Adding promisor storage needs object authorization, completeness metadata, bounded fetches and safe interaction with maintenance.
 
-Upstream branch deletion or force-push changes the current ref view immediately. Old roots remain pinned until the whole scope is evicted; root expiry and object-level GC are not implemented. Removing an old root does not reclaim history still reachable from another live root, and deleting a pack directly can break shared objects.
+Initial unfiltered v2 fetches with `done` and no haves reconcile storage against a complete live refs snapshot. Complete cached tips and tags are named under `refs/cache/upstream/`; roots no longer named by the snapshot are unpinned, and HEAD follows the upstream. Uncached refs remain absent without fetching their objects. Incremental, filtered, shallow and negotiation-only requests do not prune. Queued requests from earlier probes cannot overwrite a later synchronized snapshot. Storage refs never authorize reads or replace the request's upstream view.
+
+Idle repositories reaching `repack_pack_threshold` run `git repack --geometric=2 -d` with a repository lease, process limit and deadline. A private repository hardlinks immutable objects and copies mutable metadata. Extra capacity is reserved and new bytes are sampled every 200 ms. Its complete pack set is validated before installing new packs and removing superseded packs. Timeout and budget failure remove temporary output while retaining published objects. Root unpinning and geometric compaction do not constitute an unreachable-object expiry policy; object-level GC remains unimplemented.
+
+Startup merges legacy credential scopes into `repos/<repository-hash>/repo.git` under the directory lock. Root journals permit interrupted migration to resume; old scopes are removed after merged dependencies validate.
 
 ## Capacity and concurrency
 

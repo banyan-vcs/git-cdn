@@ -18,6 +18,8 @@ go vet ./...
 
 Integration tests run a local authenticated native `git http-backend`. They cover clone/fetch/push, v2 request classification, both site modes and URL suffixes, live authorization on cache hits, isolation, deleted refs, missing objects, LRU, capacity admission, staging cancellation, gzip, redirects and GitHub missing-owner responses.
 
+Cache lifecycle tests additionally cover cross-credential reuse with independent authorization, migration of legacy credential directories without refetch, geometric pack reduction with root connectivity, budget failure preserving packs, queued leases delaying maintenance, full-clone ref pruning and single-branch clones leaving unrequested objects uncached.
+
 The Go live harness also has an offline integration test. It exercises all clone, update, mixed concurrency, cold-cache and replay scenarios using a temporary local origin and six clients:
 
 ```sh

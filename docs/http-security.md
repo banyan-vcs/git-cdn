@@ -14,7 +14,7 @@ The 8 MiB compressed/decompressed upload-pack request limit remains. The parser 
 
 `max_response_bytes` limits one local response to 1 GiB by default. `max_temp_response_bytes` defaults to 4 GiB and limits all unfinished local response files together. Writers reserve capacity before each write; reservations remain charged during client transfer and are released only after file removal. If generation exceeds either budget, the partial file is removed and the original request goes to the origin before local output is committed. Failed removal remains charged until restart.
 
-Startup holds the exclusive cache directory lock and removes orphaned files and directories under the service-owned `tmp/` directory. Persistent repository objects and the credential HMAC key remain intact. Do not store unrelated files under `tmp/`.
+Startup holds the exclusive cache directory lock and removes orphaned files and directories under the service-owned `tmp/` directory. Persistent repository objects remain intact. Do not store unrelated files under `tmp/`.
 
 This is a response spool budget, not a filesystem quota. Staging retains its per-stage `max_cache_bytes` check every 200 ms and needs additional space. Provision disk for persistent objects, concurrent staging, response spools and filesystem overhead.
 

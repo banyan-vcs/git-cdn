@@ -2,11 +2,21 @@
 
 ## Persistent capacity
 
-`max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/<credential>/` scopes, including packs, indexes, refs and repository metadata. One cache directory shares that budget across sites and credentials.
+`max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/` repositories, including packs, indexes, refs and repository metadata. Authorized users share the same repository objects; one cache directory shares that budget across sites and repositories.
 
 Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Active and queued leases pin their entry, including while staging reads its objects through alternates.
 
-LRU removes whole scopes, not individual packs or branches. An evicted scope hydrates again on demand. A scope larger than the budget or capacity pinned by active jobs uses upstream passthrough. Old `refs/cache/roots/` are not expired individually; object-level Git GC is not implemented.
+LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough.
+
+Full unfiltered fetches with no haves and `done` reconcile cached refs against the complete live snapshot. Available complete roots are pinned and mapped to `refs/cache/upstream/`; obsolete cached refs and old roots are removed. Unrequested branches are not downloaded. Unpinning removes a retention ref, not an individual pack. Source refs and current requested roots still govern every response.
+
+## Pack maintenance
+
+`repack_pack_threshold` defaults to 32 (minimum 2) and `repack_timeout` defaults to two minutes. A bounded background queue coalesces maintenance, and idle-only acquisition uses the existing repository gate. Active and waiting clients pin their repository. Maintenance also consumes the global native Git process limit.
+
+`git repack --geometric=2 -d` runs in a temporary copy with hardlinked immutable objects and copied metadata. New-file bytes have a capacity reservation and are checked every 200 ms and before publication. The staged pack set must have complete ref dependencies before new packs are installed and old packs are removed. Failed or timed-out generation preserves the existing pack set. Capacity shortages skip maintenance. A no-op or failure is retried on a later repository access rather than continuously requeued.
+
+This consolidates packs; it does not implement cruft expiry or general object-level GC. Superseded histories may still occupy disk after their roots are removed.
 
 The repository lease can end before a spool response finishes transmission because the response file is independent of cached objects. This permits client transfers to overlap without allowing eviction during pack generation.
 
