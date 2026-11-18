@@ -4,6 +4,8 @@
 
 实际首版的启动、配置、支持矩阵及限制见 [README](../README.md)。实现默认按凭据隔离缓存，使用单进程目录锁及每仓库操作锁；依赖完整性实时遍历，尚未引入 generation/manifest 快速证明或自动 GC。为保证失败后可完整回源，本地响应先落磁盘再发送，尚未实现流式 pack 生产者缓存。SSH 为后续阶段。
 
+持久仓库缓存已增加 `max_cache_bytes`（默认 20 GiB）及作用域 LRU：发布前预留空间，淘汰空闲旧缓存，保护活动和排队租约，持久化访问时间并在启动时重建大小统计。该限制针对 `repos/` 逻辑文件字节数；staging 按相同上限定期检查，响应仍有独立暂存限制，整个缓存目录不是文件系统硬配额。
+
 默认配置入口为 `~/.git-cdn/config.yaml`，可通过 `-config` 覆盖；默认缓存为 `~/.git-cdn/caches`，可通过 YAML 的 `cache_dir` 调整。两个路径均支持 `~/` 展开，显式相对路径仍基于启动工作目录解析。HTTP 已实现两种部署模式：`mode: single` + `upstream` 直接代理 `/group/repo[.git]`；`mode: multi` + `upstreams` 按 `/gitlab/group/repo[.git]` 的第一段选择原站。下文带 `/gitlab/` 的示例表示多站点模式，单站点使用无该前缀的仓库路径。
 
 ## 1. 推荐方案与可行性结论

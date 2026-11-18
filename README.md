@@ -106,6 +106,8 @@ Your credential helper must provide credentials for the **CDN domain** that the 
 
 Every fetch selected for local execution issues its own ls-refs request, including direct POSTs without an earlier discovery request. Upstream 401/403/404 responses preserve status and authentication challenges. Login pages or invalid ref responses cannot authorize cached data.
 
+GitHub's Git endpoint also returns 401 for nonexistent repositories. If its public owner API confirms the owner is missing, the CDN returns 404 without a login challenge. An existing owner, failed/rate-limited metadata lookup, or unknown repository visibility preserves 401; a repository API 404 alone can conceal a private repository and is not treated as proof of absence. Other hosts retain their upstream status.
+
 Object stores are isolated by **upstream URL, canonical repository identity, and credential HMAC**. The HMAC key lives in the cache directory; credentials remain in request memory and child-process environments. Repository operations are locked. Each cache directory can be owned by only one service process; multiple instances use separate directories.
 
 Objects are received and checked in a staging bare repository before pack/index files and GC roots are published. Dependency traversal detects missing blobs even when the wanted commit exists. Healthy cached roots participate in incremental negotiation through alternates. Cached refs are never used as the client's upstream ref view.
@@ -119,6 +121,7 @@ Local responses are written to a size-limited temporary file. After Git exits su
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `cache_dir` | `~/.git-cdn/caches` | Persistent objects, staging, response files, and the process lock |
+| `max_cache_bytes` | 20 GiB | Total logical file bytes across persistent repository cache scopes; idle scopes are evicted by LRU |
 | `mode` | Inferred from upstream/upstreams | Direct paths for single; site-prefixed paths for multi |
 | `upstream` | Required for single | One fixed host with a `url` field |
 | `upstreams` | Required for multi | Site ID to upstream mapping |
@@ -132,11 +135,17 @@ Local responses are written to a size-limited temporary file. After Git exits su
 
 The local path handles up to 64 wants, 128 haves, and 128 current tags for include-tag requests. Larger requests fall back. Gzip v2 requests are decoded for inspection and retain their original compressed body when forwarded. Other encodings are forwarded. Canonical redirects within the trusted upstream base path are rewritten to the CDN.
 
-Automatic GC/eviction, background warming, and shared cache coordination across nodes are not implemented. Hydrated roots are pinned, so storage grows. Monitor cache and temporary disk usage. `max_response_bytes` limits a local response, not total cache size or upstream hydration storage. The service owns its cache repositories; do not prune or delete objects while it is running.
+Persistent repository caches use LRU eviction with a default 20 GiB budget. Access times survive restarts, and startup trims existing caches if the configured budget is smaller. Before publication, the server reserves room and removes the oldest idle repository/credential scopes. Active leases and waiting requests pin their scopes, so hydration, alternates, and packing cannot race with eviction. A repository larger than the budget, or a budget fully pinned by active requests, falls back upstream. Evicted repositories are fetched again on demand.
+
+```yaml
+max_cache_bytes: 21474836480 # 20 GiB
+```
+
+The budget counts regular-file lengths under managed `repos/` scopes, including Git metadata. It excludes directory/block overhead, the process lock and HMAC key, and `tmp/`. Each staging download is checked against the same limit before publication and every 200 ms while fetching; temporary writes can exceed it between checks. Response files still use `max_response_bytes`. Concurrent staging and response files therefore require additional disk space: this is a persistent-cache admission limit, not a filesystem quota on the entire cache directory. Background warming, per-object Git GC, and shared cache coordination across nodes are not implemented. The service owns its cache repositories; do not prune or delete objects while it is running.
 
 Stable upstream repository IDs are not checked yet. Invalidate a path's old cache when the upstream deletes and recreates that repository. Local HTTP v2 acceleration requires upstream v2 support. Verify the selected host's protocol capabilities and credential behavior during deployment.
 
-`GET /healthz` returns health status. `GET /metrics` exports local, hydration, passthrough, and authorization-denial counters. Logs omit authentication headers and upstream Git stderr.
+`GET /healthz` returns health status. `GET /metrics` exports local, hydration, passthrough, and authorization-denial counters, plus cache bytes, limit, pending reservation bytes, entry count, evictions and evicted bytes. Logs omit authentication headers and upstream Git stderr.
 
 ## Validation
 
@@ -147,6 +156,8 @@ go vet ./...
 ```
 
 Integration tests run an authenticated native `git http-backend` and standard Git clients. They cover clone, incremental fetch, push, YAML validation, both modes and URL suffixes, cache reuse, per-site authorization, stale OID forwarding, missing blob/pack repair, concurrent misses, timeouts, response limits, gzip, and redirects. The tests have passed with Git 2.54.0 and 2.42.0, race detection, and vet.
+
+Cache policy tests cover LRU order, restart recovery, smaller startup budgets, active/waiting lease protection, concurrent capacity reservations, oversized fallback, refetch after eviction, and cancellation of growing staging data. GitHub response tests cover confirmed missing owners, preserved authentication for unknown visibility, and metadata failures.
 
 ```sh
 go run ./scripts/live-repository --concurrency 6 --repository git/git
