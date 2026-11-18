@@ -79,6 +79,7 @@ type Config struct {
 	UpstreamTimeout           string              `json:"upstream_timeout" yaml:"upstream_timeout"`
 	TLSCert                   string              `json:"tls_cert" yaml:"tls_cert"`
 	TLSKey                    string              `json:"tls_key" yaml:"tls_key"`
+	SSH                       *SSH                `json:"ssh,omitempty" yaml:"ssh,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -166,7 +167,13 @@ func (c *Config) Validate() error {
 	if err := c.validateTransport(); err != nil {
 		return err
 	}
-	return c.validateCredentialHosts(upstreams)
+	if err := c.validateCredentialHosts(upstreams); err != nil {
+		return err
+	}
+	if c.SSH != nil {
+		return c.SSH.Validate()
+	}
+	return nil
 }
 
 func (c *Config) validateAuthHeaders() error {

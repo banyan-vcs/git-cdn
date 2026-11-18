@@ -14,6 +14,7 @@ import (
 
 	"github.com/chiyutianyi/git-cdn/internal/config"
 	"github.com/chiyutianyi/git-cdn/internal/server"
+	"github.com/chiyutianyi/git-cdn/internal/sshproxy"
 )
 
 func main() {
@@ -38,6 +39,27 @@ func run(logger *slog.Logger) error {
 	defer handler.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if c.SSH != nil {
+		sshServer, err := sshproxy.New(c, handler)
+		if err != nil {
+			return err
+		}
+		sshListener, err := net.Listen("tcp", c.SSH.Listen)
+		if err != nil {
+			sshServer.Close()
+			return err
+		}
+		defer sshServer.Close()
+		defer sshListener.Close()
+		go func() { <-ctx.Done(); sshListener.Close(); sshServer.Close() }()
+		go func() {
+			if err := sshServer.Serve(sshListener); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Error("SSH listener failed")
+				stop()
+			}
+		}()
+		logger.Info("git CDN SSH listening", "address", sshListener.Addr().String())
+	}
 	httpServer := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, IdleTimeout: 2 * time.Minute, BaseContext: func(_ net.Listener) context.Context { return ctx }}
 	listener, err := net.Listen("tcp", c.Listen)
 	if err != nil {
