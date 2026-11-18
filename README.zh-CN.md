@@ -180,3 +180,7 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 - [实验脚本](scripts/protocol-probe/main.go)：仅依赖 Go 标准库和原生 Git，不访问网络、不使用个人凭据。
 
 SSH 后续需要平台用户作用域委托、已配置用户凭据映射或显式 agent forwarding，方案见设计文档。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。第三方依赖保留各自的许可证。

@@ -178,3 +178,7 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 - [Probe script](scripts/protocol-probe/main.go): Go standard library and native Git; no network or personal credentials.
 
 SSH will require platform delegation, a configured user credential mapping, or explicit agent forwarding. See the design document.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party dependencies retain their own licenses.
