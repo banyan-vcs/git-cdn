@@ -24,7 +24,29 @@ func (l *Lease) complete(ctx context.Context, roots []string, all bool) bool {
 }
 
 // Ensure receives objects in a separate repository before publishing complete roots.
+type HydrateSource func(context.Context, string, []string) error
+
 func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, roots []string) (bool, error) {
+	return l.EnsureWith(ctx, roots, func(ctx context.Context, stage string, roots []string) error {
+		pairs := [][2]string{
+			{"credential.helper", ""}, {"credential.interactive", "false"},
+			{"http.proxy", ""}, {"http.followRedirects", "false"},
+			{"http.sslVerify", "true"}, {"http.extraHeader", ""},
+			{"fetch.fsckObjects", "true"}, {"core.hooksPath", os.DevNull},
+			{"fetch.unpackLimit", "0"}, {"transfer.unpackLimit", "0"},
+		}
+		for _, h := range headers {
+			pairs = append(pairs, [2]string{"http." + strings.TrimSuffix(origin, "/") + "/.extraHeader", h[0] + ": " + h[1]})
+		}
+		args := []string{"-c", "protocol.version=2", "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", origin}
+		for _, root := range roots {
+			args = append(args, root+":refs/cache/roots/"+root)
+		}
+		return l.store.Git.Run(ctx, stage, nil, io.Discard, nativegit.ConfigEnvironment(pairs), args...)
+	})
+}
+
+func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSource) (bool, error) {
 	g := l.store.Git
 	if err := l.store.ensureScope(l.entry.key); err != nil {
 		return false, err
@@ -63,21 +85,7 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 			}
 		}
 	}
-	pairs := [][2]string{
-		{"credential.helper", ""}, {"credential.interactive", "false"},
-		{"http.proxy", ""}, {"http.followRedirects", "false"},
-		{"http.sslVerify", "true"}, {"http.extraHeader", ""},
-		{"fetch.fsckObjects", "true"}, {"core.hooksPath", os.DevNull},
-		{"fetch.unpackLimit", "0"}, {"transfer.unpackLimit", "0"},
-	}
-	for _, h := range headers {
-		pairs = append(pairs, [2]string{"http." + strings.TrimSuffix(origin, "/") + "/.extraHeader", h[0] + ": " + h[1]})
-	}
-	args := []string{"-c", "protocol.version=2", "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", origin}
-	for _, root := range roots {
-		args = append(args, root+":refs/cache/roots/"+root)
-	}
-	if err := l.fetchBounded(ctx, stage, nativegit.ConfigEnvironment(pairs), args...); err != nil {
+	if err := l.runBounded(ctx, stage, func(ctx context.Context) error { return source(ctx, stage, roots) }); err != nil {
 		return false, err
 	}
 	if err := g.Run(ctx, stage, strings.NewReader(strings.Join(roots, "\n")+"\n"), io.Discard, nil, "rev-list", "--objects", "--missing=error", "--quiet", "--stdin"); err != nil {

@@ -11,6 +11,10 @@ import (
 )
 
 func (l *Lease) fetchBounded(ctx context.Context, stage string, env map[string]string, args ...string) error {
+	return l.runBounded(ctx, stage, func(ctx context.Context) error { return l.store.Git.Run(ctx, stage, nil, io.Discard, env, args...) })
+}
+
+func (l *Lease) runBounded(ctx context.Context, stage string, run func(context.Context) error) error {
 	size, err := directorySize(stage)
 	if err != nil {
 		return err
@@ -45,7 +49,7 @@ func (l *Lease) fetchBounded(ctx context.Context, stage string, env map[string]s
 			}
 		}
 	}()
-	err = l.store.Git.Run(ctx, stage, nil, io.Discard, env, args...)
+	err = run(ctx)
 	close(done)
 	<-stopped
 	if cause := context.Cause(ctx); cause != nil {

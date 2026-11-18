@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/chiyutianyi/git-cdn/internal/cache"
 	"io"
 	"net/http"
 	"os"
@@ -25,19 +26,34 @@ func unique(values []string) []string {
 }
 
 func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, string, error) {
-	ctx, cancel := context.WithTimeout(r.Context(), s.gitTimeout)
-	defer cancel()
 	headers := s.headers(r)
 	identity := rt.base.String() + "/" + strings.TrimSuffix(rt.repo, ".git") + ".git:sha1"
+	return s.prepareObjects(r.Context(), identity, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
+		return l.Ensure(ctx, rt.target(rt.repo).String(), headers, roots)
+	})
+}
+
+func (s *Server) PrepareSSH(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, source cache.HydrateSource) (*responseFile, string, error) {
+	file, status, err := s.prepareObjects(ctx, identity, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
+		return l.EnsureWith(ctx, roots, source)
+	})
+	if err == nil {
+		s.local.Add(1)
+	}
+	return file, status, err
+}
+
+func (s *Server) prepareObjects(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (*responseFile, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.gitTimeout)
+	defer cancel()
 	lease, err := s.store.Acquire(ctx, s.store.Key(identity))
 	if err != nil {
 		return nil, "", err
 	}
 	defer lease.Release()
-	origin := rt.target(rt.repo).String()
 	roots := unique(fetch.Wants)
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.fetchTimeout)
-	hit, err := lease.Ensure(fetchCtx, origin, headers, roots)
+	hit, err := ensure(fetchCtx, lease, roots)
 	fetchCancel()
 	if err != nil {
 		return nil, "", err
@@ -78,7 +94,7 @@ func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapsh
 		}
 		roots = unique(roots)
 		fetchCtx, fetchCancel := context.WithTimeout(ctx, s.fetchTimeout)
-		tagHit, err := lease.Ensure(fetchCtx, origin, headers, roots)
+		tagHit, err := ensure(fetchCtx, lease, roots)
 		fetchCancel()
 		if err != nil {
 			return nil, "", err
