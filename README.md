@@ -6,11 +6,11 @@ An HTTP Git caching proxy built with Go and native Git. Before serving a fetch l
 
 The CDN has its own domain, such as `git-cdn.example`. Clients connect to the CDN, which uses the request's upstream credentials to contact the configured Git host.
 
-HTTP smart protocol v2 is implemented. SSH remains a planned feature.
+HTTP smart protocol v2 and a configurable SSH password proxy are implemented. See [SSH setup and requirements](docs/ssh.md) and [config.ssh.example.yaml](config.ssh.example.yaml).
 
 ## Run
 
-Requirements: Go 1.24.1+, native Git, and Linux or macOS. Git 2.37+ must support protocol v2, `fetch --no-auto-maintenance` and cruft packs.
+Requirements: Go 1.26+, native Git, and Linux or macOS. Git 2.37+ must support protocol v2, `fetch --no-auto-maintenance` and cruft packs.
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -201,7 +201,7 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 - [Protocol probes](docs/protocol-probes.md): local Git checks and their implications.
 - [Probe script](scripts/protocol-probe/main.go): Go standard library and native Git; no network or personal credentials.
 
-SSH will require platform delegation, a configured user credential mapping, or explicit agent forwarding. See the design document.
+SSH password proxying reuses credentials accepted by the configured origin; key-only authentication still requires delegation or a signing design. See [SSH](docs/ssh.md).
 
 ## License
 

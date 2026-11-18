@@ -65,3 +65,5 @@ For a performance study:
 5. Record whether update tests use an actual upstream change or controlled local history replay. Incremental pack size is an observation and need not be smaller for every change.
 
 Put run data in ignored artifacts or an external benchmark report. Durable documentation should retain the methodology and acceptance criteria, not dated service IDs, PIDs, machine paths, fixed commit hashes or a single project's timings.
+
+SSH integration tests use a local password-authenticated SSH Git origin and standard Git/OpenSSH clients. They cover ordinary/warm clones, origin updates and subsequent cache hydration, shallow passthrough, access revocation and rejected paths. See [SSH requirements](ssh.md).

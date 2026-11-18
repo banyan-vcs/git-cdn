@@ -1,0 +1,21 @@
+# HTTP and SSH may share the same objects when both targets are the same repo.
+mode: single
+upstream:
+  url: https://git.example.com
+listen: 127.0.0.1:8080
+cache_dir: ~/.git-cdn/caches
+
+ssh:
+  listen: 127.0.0.1:2222
+  host_key: ~/.git-cdn/ssh_host_ed25519_key
+  allowed_users: [git]
+  mode: single
+  upstream:
+    address: git.example.com:22
+    user: git
+    known_hosts: ~/.git-cdn/known_hosts
+    cache_identity_url: https://git.example.com
+
+# For multiple SSH origins, replace upstream with upstreams and mode: multi.
+# Clients select a site with git@cdn.example:site/owner/repository.git.
+# Each site configures its own address, user, known_hosts and optional prefix.

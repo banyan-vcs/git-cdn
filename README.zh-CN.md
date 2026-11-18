@@ -6,11 +6,11 @@
 
 Git CDN 使用独立域名，例如 `git-cdn.example`；原始服务仍使用 `gitlab.com`。客户端连接 CDN，CDN 使用请求对应的上游凭据回源。
 
-已实现 HTTP smart protocol v2 首版；SSH 仍处于设计阶段。
+已实现 HTTP smart protocol v2 和可配置 SSH 密码代理；配置及适用条件见 [SSH 说明](docs/ssh.md) 和 [样例](config.ssh.example.yaml)。
 
 ## 运行
 
-需要 Go 1.24.1+、原生 Git，以及 Linux 或 macOS。需要 Git 2.37+，支持 protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。
+需要 Go 1.26+、原生 Git，以及 Linux 或 macOS。需要 Git 2.37+，支持 protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -203,7 +203,7 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 - [协议实验](docs/protocol-probes.md)：本地 Git 验证及其设计依据。
 - [实验脚本](scripts/protocol-probe/main.go)：仅依赖 Go 标准库和原生 Git，不访问网络、不使用个人凭据。
 
-SSH 后续需要平台用户作用域委托、已配置用户凭据映射或显式 agent forwarding，方案见设计文档。
+SSH 密码代理复用原站接受的凭据；仅支持公钥的原站仍需委托或签名方案。见 [SSH 说明](docs/ssh.md)。
 
 ## 许可证
 

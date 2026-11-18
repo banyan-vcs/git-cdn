@@ -84,7 +84,7 @@ Measure request upload, authorization, lease queueing, dependency checks, hydrat
 
 A production data plane benefits from stable placement, enough local SSD space and controlled cache lifecycle. Each instance currently owns an independent cache; application cache coordination and cross-node routing are external concerns. The upstream remains the recoverable source of all objects.
 
-SSH is planned. Terminating SSH at a separate CDN cannot reuse the client's upstream authentication signature. It needs platform delegation, a configured identity mapping or explicit agent forwarding. SSH v0/v1 also needs a stateful negotiation design; HTTP stateless processing alone is not sufficient.
+The [SSH password frontend](ssh.md) terminates SSH and submits the same password/token to a fixed origin. It accepts Git exec commands and GIT_PROTOCOL, validates current refs before supported complete v2 fetches, and receives missing objects over SSH with native index-pack. Other sessions stream upstream; negotiation-only fetches commit the remaining session to passthrough. Origin host keys are verified and reusable passwords remain connection-scoped. Key-only authentication still needs delegation or a signing design; transport acceptance is not repository authorization.
 
 ## Code map
 
