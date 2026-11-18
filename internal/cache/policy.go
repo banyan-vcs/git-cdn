@@ -20,6 +20,7 @@ type entry struct {
 	accessed       time.Time
 	repackPending  bool
 	refsObservedAt time.Time
+	lastGC         time.Time
 }
 
 type Stats struct {
@@ -32,12 +33,15 @@ type Stats struct {
 	Repacks       uint64
 	RepackFailed  uint64
 	RepackSkipped uint64
+	GCs           uint64
+	GCFailed      uint64
+	GCSkipped     uint64
 }
 
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped}
+	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped, GCs: s.gcs, GCFailed: s.gcFailed, GCSkipped: s.gcSkipped}
 }
 
 func digest(s string) bool {
@@ -110,7 +114,11 @@ func (s *Store) loadEntries() error {
 		if err != nil {
 			return err
 		}
-		s.entries[key] = &entry{key: key, gate: make(chan struct{}, 1), size: size, accessed: info.ModTime()}
+		lastGC, err := readGCTime(filepath.Join(path, "repo.git"), info.ModTime())
+		if err != nil {
+			return err
+		}
+		s.entries[key] = &entry{key: key, gate: make(chan struct{}, 1), size: size, accessed: info.ModTime(), lastGC: lastGC}
 		s.usedBytes += size
 	}
 	return nil

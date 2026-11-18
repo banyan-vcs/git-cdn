@@ -16,7 +16,15 @@ Full unfiltered fetches with no haves and `done` reconcile cached refs against t
 
 `git repack --geometric=2 -d` runs in a temporary copy with hardlinked immutable objects and copied metadata. New-file bytes have a capacity reservation and are checked every 200 ms and before publication. The staged pack set must have complete ref dependencies before new packs are installed and old packs are removed. Failed or timed-out generation preserves the existing pack set. Capacity shortages skip maintenance. A no-op or failure is retried on a later repository access rather than continuously requeued.
 
-This consolidates packs; it does not implement cruft expiry or general object-level GC. Superseded histories may still occupy disk after their roots are removed.
+## Unreachable-object retention
+
+`gc_interval` defaults to 24 hours. A minute-based maintenance scan also queues idle repositories whose persisted `.gc-last` is due; activity and queued leases prevent acquisition. GC does not depend on pack count and uses the same Git process and `repack_timeout` budgets. Successful runs advance `.gc-last`; failed/skipped attempts retry on later activity or a scan.
+
+`gc_retention` defaults to 336 hours and cannot be shorter than 14 days. Cruft repack (`-a -d --cruft --cruft-expiration=<cutoff>`) and loose pruning run in a private repository. Recent unreachable objects and dependencies are retained using object mtimes and `.mtimes`; these are storage ages, not commit author/committer dates. Geometric repack excludes cruft packs, and publication includes their `.mtimes` sidecars.
+
+Ref reconciliation moves removed roots to `refs/cache/retained/<oid>` and persists their removal time in `.gc-retained`. A renewed live root clears its old grace period; a later removal starts a new period. Whole histories receive at least 14 days from unpinning, even when their object storage is older. Missing ref timestamp metadata renews the grace period conservatively. Internal grace refs never authorize reads or appear in client ref views.
+
+GC expires grace pins in staging, validates the surviving object closure and publishes pack data and age metadata before deleting expired pins and superseded objects. Budget, timeout or validation failure during generation leaves the published repository intact. Whole-repository LRU eviction is an independent recoverable-cache policy, and still cannot remove active or queued repositories.
 
 The repository lease can end before a spool response finishes transmission because the response file is independent of cached objects. This permits client transfers to overlap without allowing eviction during pack generation.
 

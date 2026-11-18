@@ -10,7 +10,7 @@ HTTP smart protocol v2 is implemented. SSH remains a planned feature.
 
 ## Run
 
-Requirements: Go 1.24.1+, native Git, and Linux or macOS. Git must support protocol v2 and `fetch --no-auto-maintenance`.
+Requirements: Go 1.24.1+, native Git, and Linux or macOS. Git 2.37+ must support protocol v2, `fetch --no-auto-maintenance` and cruft packs.
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -129,7 +129,9 @@ Local responses are written to a size-limited temporary file. After Git exits su
 | `cache_dir` | `~/.git-cdn/caches` | Persistent objects, staging, response files, and the process lock |
 | `max_cache_bytes` | 20 GiB | Total logical file bytes across persistent repository cache scopes; idle scopes are evicted by LRU |
 | `repack_pack_threshold` | 32 | Queue idle repositories at or above this pack count; minimum 2 |
-| `repack_timeout` | 2m | Deadline for background geometric repack |
+| `repack_timeout` | 2m | Deadline for background repack and GC |
+| `gc_interval` | 24h | Interval between successful garbage collections, independent of pack count |
+| `gc_retention` | 336h | Minimum 14-day window for recent unreachable objects and removed-root histories |
 | `mode` | Inferred from upstream/upstreams | Direct paths for single; site-prefixed paths for multi |
 | `upstream` | Required for single | One fixed host with a `url` field |
 | `upstreams` | Required for multi | Site ID to upstream mapping |
@@ -150,13 +152,15 @@ Each v2 command accepts at most 4096 packets without materializing a packet arra
 
 Persistent repository caches use LRU eviction with a default 20 GiB budget. Access times survive restarts, and startup trims existing caches if the configured budget is smaller. Before publication, the server reserves room and removes the oldest idle repositories. Active leases and waiting requests pin their repositories, so hydration, alternates, and packing cannot race with eviction. A repository larger than the budget, or a budget fully pinned by active requests, falls back upstream. Evicted repositories are fetched again on demand.
 
-Idle repositories with enough packs run `git repack --geometric=2 -d` under an exclusive lease and the global Git process limit. Maintenance builds and validates a private pack set using hardlinks to immutable objects, reserves extra capacity and checks new-file growth every 200 ms before publishing. Failure keeps the existing packs. Insufficient capacity skips repack; it does not fail a client response. Repack consolidates packs and does not provide an unreachable-object retention/GC policy. Metrics expose completed, failed and skipped repacks.
+Idle repositories with enough packs run `git repack --geometric=2 -d` under an exclusive lease and the global Git process limit. Maintenance builds and validates a private pack set using hardlinks to immutable objects, reserves extra capacity and checks new-file growth every 200 ms before publishing. Failure keeps the existing packs. Insufficient capacity skips repack; it does not fail a client response. Geometric repack consolidates normal packs while preserving cruft age metadata; timed GC is described below. Metrics expose completed, failed and skipped repacks.
+
+GC runs on idle repositories at `gc_interval`, including repositories below the repack threshold. It uses `git repack -a -d --cruft --cruft-expiration=<cutoff>` and expired-loose-object pruning in the same private staging/publishing workflow. `gc_retention` defaults to 14 days and cannot be configured shorter. Git's object mtimes and cruft `.mtimes` retain recent unreachable objects and their dependencies; geometric repack keeps cruft packs separate so their ages survive. Removed root histories additionally receive `refs/cache/retained/<oid>` grace pins for at least 14 days from unpinning, tracked in `.gc-retained`. These pins never authorize client reads. `.gc-last` persists the last successful collection. Activity and queued leases block GC; budget/time failures retain published objects. LRU still evicts whole idle repositories as recoverable caches and is independent of the GC retention window.
 
 ```yaml
 max_cache_bytes: 21474836480 # 20 GiB
 ```
 
-The budget counts regular-file lengths under managed `repos/` scopes, including Git metadata. It excludes directory/block overhead, the process lock and `tmp/`. Each staging download is checked against the same limit before publication and every 200 ms while fetching; temporary writes can exceed it between checks. Response files use `max_response_bytes` per file and `max_temp_response_bytes` globally; reservations remain held until file deletion. Startup clears orphaned service temporary files under the directory lock. Concurrent staging and response files therefore require additional disk space: this is a persistent-cache admission limit, not a filesystem quota on the entire cache directory. Background warming, per-object Git GC, and shared cache coordination across nodes are not implemented. The service owns its cache repositories; do not prune or delete objects while it is running.
+The budget counts regular-file lengths under managed `repos/` scopes, including Git metadata. It excludes directory/block overhead, the process lock and `tmp/`. Each staging download is checked against the same limit before publication and every 200 ms while fetching; temporary writes can exceed it between checks. Response files use `max_response_bytes` per file and `max_temp_response_bytes` globally; reservations remain held until file deletion. Startup clears orphaned service temporary files under the directory lock. Concurrent staging and response files therefore require additional disk space: this is a persistent-cache admission limit, not a filesystem quota on the entire cache directory. Background warming and shared cache coordination across nodes are not implemented. The service owns its cache repositories; do not prune or delete objects while it is running.
 
 Stable upstream repository IDs are not checked yet. Invalidate a path's old cache when the upstream deletes and recreates that repository. Local HTTP v2 acceleration requires upstream v2 support. Verify the selected host's protocol capabilities and credential behavior during deployment.
 

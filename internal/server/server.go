@@ -48,7 +48,9 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	repackTimeout, _ := time.ParseDuration(c.RepackTimeout)
-	store, err := cache.Open(c.CacheDir, git, c.MaxCacheBytes, cache.RepackOptions{PackThreshold: c.RepackPackThreshold, Timeout: repackTimeout})
+	gcInterval, _ := time.ParseDuration(c.GCInterval)
+	gcRetention, _ := time.ParseDuration(c.GCRetention)
+	store, err := cache.Open(c.CacheDir, git, c.MaxCacheBytes, cache.RepackOptions{PackThreshold: c.RepackPackThreshold, Timeout: repackTimeout, GCInterval: gcInterval, GCRetention: gcRetention})
 	if err != nil {
 		return nil, err
 	}

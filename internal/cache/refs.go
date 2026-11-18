@@ -2,12 +2,14 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
@@ -86,6 +88,44 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	if err != nil {
 		return err
 	}
+	retained, err := readRetention(l.Dir)
+	if err != nil {
+		return err
+	}
+	for oid := range retained {
+		if present[oid] {
+			delete(retained, oid)
+		} else {
+			desired[retainedPrefix+oid] = oid
+		}
+	}
+	// Preserve dropped root closures independently of the upstream ref names.
+	for _, line := range strings.Split(strings.TrimSpace(string(current)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return fmt.Errorf("invalid cached ref")
+		}
+		if present[fields[1]] {
+			continue
+		}
+		if strings.HasPrefix(fields[0], retainedPrefix) || strings.HasPrefix(fields[0], "refs/cache/roots/") || strings.HasPrefix(fields[0], "refs/cache/upstream/") {
+			if retained[fields[1]] == 0 {
+				retained[fields[1]] = time.Now().UnixNano()
+			}
+			desired[retainedPrefix+fields[1]] = fields[1]
+		}
+	}
+	retentionData, err := json.Marshal(retained)
+	if err != nil {
+		return err
+	}
+	previousRetention, err := os.ReadFile(filepath.Join(l.Dir, retentionFile))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	var updates strings.Builder
 	var additional int64
 	for _, line := range strings.Split(strings.TrimSpace(string(current)), "\n") {
@@ -127,7 +167,11 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	if string(oldHead) != head {
 		additional += int64(len(head))
 	}
-	if updates.Len() == 0 && string(oldHead) == head {
+	retentionChanged := string(previousRetention) != string(retentionData)
+	if retentionChanged {
+		additional += int64(len(retentionData))
+	}
+	if updates.Len() == 0 && string(oldHead) == head && !retentionChanged {
 		l.entry.refsObservedAt = snapshot.ObservedAt
 		return nil
 	}
@@ -136,6 +180,13 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 		return err
 	}
 	defer r.release()
+	// Persist timestamps before installing grace refs; interrupted updates can
+	// never create a grace ref with an accidentally old/missing age.
+	if retentionChanged {
+		if err := atomicFile(l.Dir, retentionFile, retentionData); err != nil {
+			return err
+		}
+	}
 	if updates.Len() > 0 {
 		if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 			return err

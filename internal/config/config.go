@@ -63,6 +63,8 @@ type Config struct {
 	MaxCacheBytes             int64               `json:"max_cache_bytes" yaml:"max_cache_bytes"`
 	RepackPackThreshold       int                 `json:"repack_pack_threshold" yaml:"repack_pack_threshold"`
 	RepackTimeout             string              `json:"repack_timeout" yaml:"repack_timeout"`
+	GCInterval                string              `json:"gc_interval" yaml:"gc_interval"`
+	GCRetention               string              `json:"gc_retention" yaml:"gc_retention"`
 	MaxConcurrentGit          int                 `json:"max_concurrent_git" yaml:"max_concurrent_git"`
 	MaxConcurrentRequests     int                 `json:"max_concurrent_requests" yaml:"max_concurrent_requests"`
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
@@ -223,7 +225,7 @@ func (c *Config) validateLimits() error {
 	for _, timeout := range []struct {
 		p *string
 		d string
-	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "2m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}, {&c.RepackTimeout, "2m"}} {
+	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "2m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}, {&c.RepackTimeout, "2m"}, {&c.GCInterval, "24h"}, {&c.GCRetention, "336h"}} {
 		if *timeout.p == "" {
 			*timeout.p = timeout.d
 		}
@@ -237,6 +239,10 @@ func (c *Config) validateLimits() error {
 	}
 	if c.RepackPackThreshold < 2 {
 		return fmt.Errorf("repack_pack_threshold must be at least 2")
+	}
+	retention, _ := time.ParseDuration(c.GCRetention)
+	if retention < 14*24*time.Hour {
+		return fmt.Errorf("gc_retention must be at least 336h (14 days)")
 	}
 	return nil
 }

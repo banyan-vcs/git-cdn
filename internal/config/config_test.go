@@ -58,6 +58,8 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 			require.EqualValues(t, "10m", c.RequestTimeout, "unsafe resource defaults: %+v", c)
 			require.Equal(t, 32, c.RepackPackThreshold)
 			require.Equal(t, "2m", c.RepackTimeout)
+			require.Equal(t, "24h", c.GCInterval)
+			require.Equal(t, "336h", c.GCRetention)
 		})
 	}
 }
@@ -119,6 +121,8 @@ func TestYAMLRejectsAmbiguousAndMalformedConfiguration(t *testing.T) {
 		{"invalid cache size", valid + "max_cache_bytes: -1\n"},
 		{"invalid repack threshold", valid + "repack_pack_threshold: 1\n"},
 		{"invalid repack timeout", valid + "repack_timeout: 0s\n"},
+		{"unsafe gc retention", valid + "gc_retention: 335h\n"},
+		{"invalid gc interval", valid + "gc_interval: 0s\n"},
 		{"TLS pair missing", valid + "tls_cert: server.pem\n"},
 		{"unsafe single URL", "mode: single\nupstream:\n  url: https://user:secret@example.com\n"},
 		{"invalid site ID", "mode: multi\nupstreams:\n  bad/id:\n    url: https://example.com\n"},

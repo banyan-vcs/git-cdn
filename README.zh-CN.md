@@ -10,7 +10,7 @@ Git CDN 使用独立域名，例如 `git-cdn.example`；原始服务仍使用 `g
 
 ## 运行
 
-需要 Go 1.24.1+、原生 Git，以及 Linux 或 macOS。已安装的 Git 必须支持 protocol v2 和 `fetch --no-auto-maintenance`。
+需要 Go 1.24.1+、原生 Git，以及 Linux 或 macOS。需要 Git 2.37+，支持 protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -129,7 +129,9 @@ GitHub 的 Git 接口也会对不存在的仓库返回 401。若公开 owner API
 | `cache_dir` | `~/.git-cdn/caches` | 持久对象缓存、staging、响应临时文件及缓存目录锁 |
 | `max_cache_bytes` | 20 GiB | 持久仓库缓存作用域内的逻辑文件总字节数，按 LRU 淘汰空闲作用域 |
 | `repack_pack_threshold` | 32 | pack 数达到阈值后排队维护空闲仓库，最小为 2 |
-| `repack_timeout` | 2m | 后台 geometric repack 的执行期限 |
+| `repack_timeout` | 2m | 后台 repack 和 GC 的执行期限 |
+| `gc_interval` | 24h | 成功 GC 之间的间隔，不依赖 pack 数量 |
+| `gc_retention` | 336h | 不可达对象和移除 root 历史的保留窗口，最小 14 天 |
 | `mode` | 根据 upstream/upstreams 推断 | single 为直接仓库路径，multi 为站点前缀路径 |
 | `upstream` | 无 | single 模式的固定原站，使用 `url` 字段 |
 | `upstreams` | 无 | multi 模式的站点 ID → 原站映射 |
@@ -150,13 +152,15 @@ GitHub 的 Git 接口也会对不存在的仓库返回 401。若公开 owner API
 
 持久仓库缓存已支持 LRU，默认容量为 20 GiB。访问时间跨重启保留；启动时若旧缓存超过新上限，会先淘汰。发布对象前预留容量并移除最久未使用的空闲仓库。活动租约和排队请求会保护其仓库，避免补齐、alternates 和打包与淘汰竞争。单个仓库超过上限，或所有空间都被活动请求占用时，完整回源；已淘汰的仓库可再次按需获取。
 
-pack 数达到阈值的空闲仓库会执行 `git repack --geometric=2 -d`，维护持有独占租约并使用全局 Git 进程额度。它通过不可变对象的硬链接构造临时 pack 集合，预留额外容量，并每 200 ms 检查新文件增长，验证完成后再发布。失败时保留原 pack；容量不足时跳过维护，不影响已经生成的客户端响应。该机制合并 pack，尚未提供不可达对象的保留期限及 GC 策略。指标提供 repack 完成、失败和跳过次数。
+pack 数达到阈值的空闲仓库会执行 `git repack --geometric=2 -d`，维护持有独占租约并使用全局 Git 进程额度。它通过不可变对象的硬链接构造临时 pack 集合，预留额外容量，并每 200 ms 检查新文件增长，验证完成后再发布。失败时保留原 pack；容量不足时跳过维护，不影响已经生成的客户端响应。geometric repack 合并普通 pack 并保留 cruft 对象年龄；到期 GC 机制见下文。指标提供 repack 完成、失败和跳过次数。
+
+GC 按 `gc_interval` 维护空闲仓库，pack 数低于 repack 阈值时也可执行。它在同样的临时仓库/发布流程中运行 `git repack -a -d --cruft --cruft-expiration=<cutoff>` 并清理过期 loose 对象。`gc_retention` 默认 14 天且不能更短：对象 mtime 及 cruft `.mtimes` 保留近期不可达对象及其依赖，geometric repack 保留独立的 cruft pack，避免丢失对象年龄。解除 root pin 的历史额外获得 `refs/cache/retained/<oid>`，至少保留自移除起的 14 天，时间记录在 `.gc-retained`；这些内部 refs 不构成读取授权。`.gc-last` 持久化上次成功 GC 时间。活动和排队租约会阻止 GC；超时或预算失败保留原对象。整体 LRU 淘汰仍独立于 GC 保留窗口，淘汰后的缓存可从原站恢复。
 
 ```yaml
 max_cache_bytes: 21474836480 # 20 GiB
 ```
 
-容量统计包括受管理 `repos/` 作用域中的常规文件长度及 Git 元数据，不包括目录/磁盘块开销、进程锁和 `tmp/`。每次 staging 下载在发布前及下载期间每 200 ms 检查相同上限，检查间隔内的临时写入可能短暂超过它。响应暂存按 `max_response_bytes` 限制单文件，并由 `max_temp_response_bytes` 限制所有活动响应文件的总字节数。预算不足时，在响应提交前回源。启动时持有目录锁清理上次进程遗留的临时文件。并发 staging 和响应文件需要额外磁盘空间：这是持久缓存的准入上限，不是整个缓存目录的文件系统硬配额。后台预热、对象级 Git GC 和跨节点缓存协调尚未实现。服务独立管理 cache 仓库，运行中不要在其中执行 prune/删除对象。
+容量统计包括受管理 `repos/` 作用域中的常规文件长度及 Git 元数据，不包括目录/磁盘块开销、进程锁和 `tmp/`。每次 staging 下载在发布前及下载期间每 200 ms 检查相同上限，检查间隔内的临时写入可能短暂超过它。响应暂存按 `max_response_bytes` 限制单文件，并由 `max_temp_response_bytes` 限制所有活动响应文件的总字节数。预算不足时，在响应提交前回源。启动时持有目录锁清理上次进程遗留的临时文件。并发 staging 和响应文件需要额外磁盘空间：这是持久缓存的准入上限，不是整个缓存目录的文件系统硬配额。后台预热和跨节点缓存协调尚未实现。服务独立管理 cache 仓库，运行中不要在其中执行 prune/删除对象。
 
 原站 repo 路径被删除后重新用于另一仓库时，目前尚无稳定 repository ID 校验；应使旧路径的缓存失效。HTTP v2 的本地加速依赖原站支持该协议；部署时需验证所选上游的协议能力及凭据行为。
 

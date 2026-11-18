@@ -36,6 +36,9 @@ type Store struct {
 	repacks       uint64
 	repackFailed  uint64
 	repackSkipped uint64
+	gcs           uint64
+	gcFailed      uint64
+	gcSkipped     uint64
 }
 
 func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackOptions) (*Store, error) {
@@ -58,7 +61,13 @@ func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackO
 	if len(options) > 0 {
 		s.repack = options[0]
 	}
-	if s.repack.PackThreshold < 2 || s.repack.Timeout <= 0 {
+	if s.repack.GCInterval == 0 {
+		s.repack.GCInterval = 24 * time.Hour
+	}
+	if s.repack.GCRetention == 0 {
+		s.repack.GCRetention = MinimumGCRetention
+	}
+	if s.repack.PackThreshold < 2 || s.repack.Timeout <= 0 || s.repack.GCInterval <= 0 || s.repack.GCRetention < MinimumGCRetention {
 		s.Close()
 		return nil, fmt.Errorf("invalid repack options")
 	}
@@ -137,7 +146,7 @@ func (s *Store) Acquire(ctx context.Context, key string) (*Lease, error) {
 	}
 	e := s.entries[key]
 	if e == nil {
-		e = &entry{key: key, gate: make(chan struct{}, 1)}
+		e = &entry{key: key, gate: make(chan struct{}, 1), lastGC: time.Now()}
 		s.entries[key] = e
 	}
 	// Waiting callers also pin the entry so eviction cannot replace their gate.

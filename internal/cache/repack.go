@@ -13,11 +13,26 @@ import (
 type RepackOptions struct {
 	PackThreshold int
 	Timeout       time.Duration
+	GCInterval    time.Duration
+	GCRetention   time.Duration
 }
+
+const MinimumGCRetention = 14 * 24 * time.Hour
 
 func packCount(dir string) int {
 	files, _ := filepath.Glob(filepath.Join(dir, "objects", "pack", "*.pack"))
 	return len(files)
+}
+
+func regularPackCount(dir string) int {
+	files, _ := filepath.Glob(filepath.Join(dir, "objects", "pack", "*.pack"))
+	count := 0
+	for _, file := range files {
+		if _, err := os.Stat(strings.TrimSuffix(file, ".pack") + ".mtimes"); os.IsNotExist(err) {
+			count++
+		}
+	}
+	return count
 }
 
 // Caller holds mu. Idle-only maintenance shares the same gate as hydration,
@@ -26,7 +41,7 @@ func (s *Store) queueRepackLocked(e *entry) {
 	if s.repackQueue == nil || s.maintenance.Err() != nil || e.repackPending || e.users != 0 {
 		return
 	}
-	if packCount(filepath.Join(s.Root, "repos", e.key, "repo.git")) < s.repack.PackThreshold {
+	if time.Since(e.lastGC) < s.repack.GCInterval && regularPackCount(filepath.Join(s.Root, "repos", e.key, "repo.git")) < s.repack.PackThreshold {
 		return
 	}
 	select {
@@ -38,10 +53,23 @@ func (s *Store) queueRepackLocked(e *entry) {
 
 func (s *Store) maintain() {
 	defer s.workers.Done()
+	ticker := time.NewTicker(min(s.repack.GCInterval, time.Minute))
+	defer ticker.Stop()
 	for {
+		if s.maintenance.Err() != nil {
+			return
+		}
 		select {
 		case <-s.maintenance.Done():
 			return
+		case <-ticker.C:
+			s.mu.Lock()
+			for _, e := range s.entries {
+				if e.size > 0 {
+					s.queueRepackLocked(e)
+				}
+			}
+			s.mu.Unlock()
 		case key := <-s.repackQueue:
 			s.mu.Lock()
 			e := s.entries[key]
@@ -56,19 +84,36 @@ func (s *Store) maintain() {
 			}
 			e.users++
 			e.gate <- struct{}{}
+			collect := time.Since(e.lastGC) >= s.repack.GCInterval
 			s.mu.Unlock()
 			l := &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e}
 			ctx, cancel := context.WithTimeout(s.maintenance, s.repack.Timeout)
-			changed, err := l.Repack(ctx)
+			var changed bool
+			var err error
+			if collect {
+				changed, err = l.Collect(ctx)
+			} else {
+				changed, err = l.Repack(ctx)
+			}
 			cancel()
 			s.mu.Lock()
-			switch {
-			case err != nil:
-				s.repackFailed++
-			case changed:
-				s.repacks++
-			default:
-				s.repackSkipped++
+			if collect {
+				if err != nil {
+					s.gcFailed++
+				} else if changed {
+					s.gcs++
+				} else {
+					s.gcSkipped++
+				}
+			} else {
+				switch {
+				case err != nil:
+					s.repackFailed++
+				case changed:
+					s.repacks++
+				default:
+					s.repackSkipped++
+				}
 			}
 			s.mu.Unlock()
 			// Release must not immediately requeue failed/no-op geometric packs.
@@ -81,11 +126,19 @@ func (s *Store) maintain() {
 // Git may delete those links, while the published repository remains intact.
 // New bytes consume a reservation; growth is checked every 200ms and at exit.
 func (l *Lease) Repack(ctx context.Context) (bool, error) {
+	if regularPackCount(l.Dir) < l.store.repack.PackThreshold {
+		return false, nil
+	}
+	return l.rewrite(ctx, false, time.Now())
+}
+
+func (l *Lease) Collect(ctx context.Context) (bool, error) {
+	return l.rewrite(ctx, true, time.Now())
+}
+
+func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
-	}
-	if packCount(l.Dir) < l.store.repack.PackThreshold {
-		return false, nil
 	}
 	if !l.complete(ctx, nil, true) {
 		return false, fmt.Errorf("cannot repack an incomplete repository")
@@ -94,17 +147,11 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var packBytes int64
-	for _, file := range oldFiles {
-		if file.Type().IsRegular() {
-			info, err := file.Info()
-			if err != nil {
-				return false, err
-			}
-			packBytes += info.Size()
-		}
+	objectBytes, err := directorySize(filepath.Join(l.Dir, "objects"))
+	if err != nil {
+		return false, err
 	}
-	budget := min(packBytes+(1<<20), l.store.maxBytes-l.entry.size)
+	budget := min(objectBytes+(1<<20), l.store.maxBytes-l.entry.size)
 	if budget <= 0 {
 		return false, nil
 	}
@@ -216,7 +263,24 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 			}
 		}
 	}()
-	err = l.store.Git.Run(ctx, stage, nil, io.Discard, nil, "repack", "--geometric=2", "-d")
+	var expired []string
+	if collect {
+		expired, err = l.expireRetained(ctx, stage, now)
+		if err == nil {
+			err = l.store.Git.Run(ctx, stage, nil, io.Discard, nil, "repack", "-a", "-d", "--cruft", "--cruft-expiration="+now.Add(-l.store.repack.GCRetention).UTC().Format(time.RFC3339))
+		}
+		if err == nil {
+			err = l.store.Git.Run(ctx, stage, nil, io.Discard, nil, "prune", "--expire="+now.Add(-l.store.repack.GCRetention).UTC().Format(time.RFC3339))
+		}
+	} else {
+		args := []string{"repack", "--geometric=2", "-d"}
+		for _, file := range oldFiles {
+			if strings.HasSuffix(file.Name(), ".mtimes") {
+				args = append(args, "--keep-pack="+strings.TrimSuffix(file.Name(), ".mtimes")+".pack")
+			}
+		}
+		err = l.store.Git.Run(ctx, stage, nil, io.Discard, nil, args...)
+	}
 	close(done)
 	<-stopped
 	if cause := context.Cause(ctx); cause != nil {
@@ -242,7 +306,7 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 	keep := make(map[string]bool)
 	changed := false
 	// Install pack data before indexes and auxiliary metadata.
-	for _, suffix := range []string{".pack", ".idx", ".rev", ".bitmap"} {
+	for _, suffix := range []string{".pack", ".idx", ".rev", ".bitmap", ".mtimes"} {
 		for _, file := range files {
 			if !strings.HasSuffix(file.Name(), suffix) {
 				continue
@@ -263,6 +327,25 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 			changed = true
 		}
 	}
+	if collect {
+		// Remove expired grace pins only after all retained pack data is installed.
+		if len(expired) > 0 {
+			var updates strings.Builder
+			for _, oid := range expired {
+				fmt.Fprintf(&updates, "delete refs/cache/retained/%s %s\n", oid, oid)
+			}
+			if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
+				return false, err
+			}
+		}
+		data, err := os.ReadFile(filepath.Join(stage, retentionFile))
+		if err != nil {
+			return false, err
+		}
+		if err := atomicFile(l.Dir, retentionFile, data); err != nil {
+			return false, err
+		}
+	}
 	// MIDX cannot reference packs removed below. Drop it and let Git use per-pack
 	// indexes; no MIDX is generated by the configured command.
 	if err := os.RemoveAll(filepath.Join(l.Dir, "objects", "pack", "multi-pack-index")); err != nil {
@@ -272,7 +355,7 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, file := range oldFiles {
-		if !(strings.HasSuffix(file.Name(), ".pack") || strings.HasSuffix(file.Name(), ".idx") || strings.HasSuffix(file.Name(), ".rev") || strings.HasSuffix(file.Name(), ".bitmap")) {
+		if !(strings.HasSuffix(file.Name(), ".pack") || strings.HasSuffix(file.Name(), ".idx") || strings.HasSuffix(file.Name(), ".rev") || strings.HasSuffix(file.Name(), ".bitmap") || strings.HasSuffix(file.Name(), ".mtimes")) {
 			continue
 		}
 		if !keep[file.Name()] {
@@ -281,6 +364,27 @@ func (l *Lease) Repack(ctx context.Context) (bool, error) {
 			}
 			changed = true
 		}
+	}
+	if collect {
+		for relative := range shared {
+			parts := strings.Split(filepath.ToSlash(relative), "/")
+			if len(parts) != 3 || parts[0] != "objects" || len(parts[1]) != 2 {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(stage, relative)); os.IsNotExist(err) {
+				if err := os.Remove(filepath.Join(l.Dir, relative)); err != nil && !os.IsNotExist(err) {
+					return false, err
+				}
+				changed = true
+			} else if err != nil {
+				return false, err
+			}
+		}
+		if err := atomicFile(l.Dir, gcFile, []byte(fmt.Sprintf("%d\n", now.Unix()))); err != nil {
+			return false, err
+		}
+		l.entry.lastGC = now
+		changed = true
 	}
 	return changed, nil
 }

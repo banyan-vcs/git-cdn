@@ -2,10 +2,12 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/nativegit"
 )
@@ -39,6 +41,11 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 	defer os.RemoveAll(stage)
 	if err := g.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", stage); err != nil {
 		return false, err
+	}
+	if !exists {
+		if err := atomicFile(stage, gcFile, []byte(fmt.Sprintf("%d\n", time.Now().Unix()))); err != nil {
+			return false, err
+		}
 	}
 	// Use previous roots for negotiation only if their dependency graph is intact.
 	if exists && l.complete(ctx, nil, true) {

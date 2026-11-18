@@ -113,7 +113,7 @@ func (s *Store) mergeLegacy(ctx context.Context, parent string, scopes []string)
 			if len(parts) != 2 || (parts[0] != "pack" && len(parts[0]) != 2) {
 				return nil
 			}
-			if parts[0] == "pack" && !(strings.HasSuffix(path, ".pack") || strings.HasSuffix(path, ".idx") || strings.HasSuffix(path, ".rev")) {
+			if parts[0] == "pack" && !(strings.HasSuffix(path, ".pack") || strings.HasSuffix(path, ".idx") || strings.HasSuffix(path, ".rev") || strings.HasSuffix(path, ".mtimes")) {
 				return nil
 			}
 			target := filepath.Join(repo, "objects", relative)
