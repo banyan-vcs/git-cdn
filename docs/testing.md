@@ -1,0 +1,57 @@
+# Testing
+
+## Local correctness
+
+Run the deterministic Go suite first:
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Integration tests run a local authenticated native `git http-backend`. They cover clone/fetch/push, v2 request classification, both site modes and URL suffixes, live authorization on cache hits, isolation, deleted refs, missing objects, LRU, capacity admission, staging cancellation, gzip, redirects and GitHub missing-owner responses.
+
+The Go live harness also has an offline integration test. It exercises all clone, update, mixed concurrency, cold-cache and replay scenarios using a temporary local origin and six clients:
+
+```sh
+go test ./scripts/live-repository -run TestLiveSuiteOffline
+```
+
+The [local protocol probes](protocol-probes.md) require Go and Git but no network:
+
+```sh
+go run ./scripts/protocol-probe
+go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
+```
+
+## Optional real repository validation
+
+With a multi-site server running and `bin/git-cdn` built, select a public workload explicitly:
+
+```sh
+go run ./scripts/live-repository --repository git/git --concurrency 6
+go run ./scripts/live-repository --repository redis/redis --concurrency 6
+```
+
+`git/git` is the primary reference workload. `redis/redis` is a recognizable practical server repository. Large projects such as `kubernetes/kubernetes` or `torvalds/linux` are appropriate only when disk, timeouts and transfer budgets are prepared for them; the full matrix retains multiple complete and partial client repositories.
+
+The isolated cold-cache server uses GitHub by default. Override `-origin` when validating a CDN configured for a local replay origin; use the same origin as the running CDN.
+
+The script checks blob:none and lazy reads, checkout, depth/deepen/unshallow, historical-to-current updates, URL alias reuse, mixed concurrent requests and cold-cache hydration sharing. It also replays a ref update on a local HTTP origin backed by real project objects. That replay is a cache correctness test, not a write to the public upstream.
+
+Output defaults to `bin/live-tests/<owner>-<repository>-<timestamp>/`. It contains command timings, protocol/curl traces, metrics, client repositories and test caches. Keep these artifacts out of version control. The script does not alter the main service or its cache configuration and closes its temporary services. It reports failures if the current configuration or resource budget cannot support its requested local path.
+
+## Performance measurement
+
+The live suite is a correctness harness. Its one-shot elapsed times are useful observations, not a latency or throughput baseline. It does not currently measure every internal phase or TTFB.
+
+For a performance study:
+
+1. Pin the upstream commit, client/server Git versions, binary revision, CPU/memory, disk and network environment.
+2. Separate ordinary, partial and shallow traffic. Record final fetch HIT/MISS/BYPASS; discovery passthrough is not a pack miss.
+3. Compare direct-origin traffic, an isolated empty CDN cache and a warmed CDN cache using equivalent commands and fresh client directories.
+4. Repeat each workload, sweep concurrency and report distributions, failures, queueing and cache metrics. Include transfer bytes, CPU and disk I/O. Add phase and TTFB instrumentation before attributing cost to packing or networking.
+5. Record whether update tests use an actual upstream change or controlled local history replay. Incremental pack size is an observation and need not be smaller for every change.
+
+Put run data in ignored artifacts or an external benchmark report. Durable documentation should retain the methodology and acceptance criteria, not dated service IDs, PIDs, machine paths, fixed commit hashes or a single project's timings.

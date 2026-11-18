@@ -1,20 +1,20 @@
-# 本地协议实验
+# Local protocol probes
 
-执行日期：2026-11-18。测试程序使用临时仓库，运行后自动清理；无外网请求，无个人凭据。
+The [probe script](../scripts/protocol-probe/main.go) uses native Git and the Go standard library. It creates temporary repositories, uses no network or personal credentials, and removes its fixtures after execution:
 
 ```sh
 go run ./scripts/protocol-probe
 ```
 
-| 实验 | 已验证行为 | 对设计的影响 |
+It emits machine-readable results to stdout. Capture those results in an ignored artifact directory when needed, rather than checking a dated snapshot into the documentation.
+
+| Probe | Behavior established | Design implication |
 | --- | --- | --- |
-| 缓存保留上游已删除 ref 的对象 | 当前上游 `ls-refs` 不包含 secret commit；本地 v2 fetch 仍成功返回其 pack，并可解出 secret 文件。三个 `allow*SHA1InWant` 开关都显式设为 false | `ls-refs` 成功和关闭 Git 开关，都不能替代 Go 层的对象授权判断 |
-| commit 存在，但引用的 blob 缺失 | `cat-file --batch-check` 返回 commit；`rev-list --objects --missing=print` 找到缺失 blob；upload-pack 退出码 128，stdout 已含 `packfile` 节 | 需要依赖闭包完整性；流式输出开始后不能重新拼接一次回源结果 |
-| 精确 OID 补齐 | cache 不含新 tip；用原生 Git fetch 该 OID 及依赖后，本地 upload-pack 成功 | 可按请求根对象补齐，无需每次 mirror 全部 refs |
-| 完整服务端缓存服务浅克隆客户端 | 对完整 cache 发 `deepen 1`，得到 shallow-info 和 pack；服务端未生成 shallow 文件 | 客户端浅克隆不要求把共享服务端缓存也改成 shallow |
-| v2 多轮协商 | 带 have、wait-for-done、不带 done 的 fetch 只返回 acknowledgments，无 pack | 不能假定每个 fetch 请求都是最终 pack 响应；不跨轮拼装响应 |
-| v2 初始 advertisement | 初始响应含 `version 2` 和 capabilities，不含 branch tip | v2 的 GET info/refs 与 POST ls-refs 是两个阶段，GET 200 不等于已获取 refs |
+| Unadvertised retained OID | v2 can read an object retained locally after the upstream ref disappears, even with allow-SHA1 configuration switches disabled | Fresh ref membership must be checked by the CDN policy |
+| Wanted commit with a missing blob | The commit exists, dependency traversal finds the hole, and upload-pack can begin output before failing | Check closure and define the response commitment boundary |
+| Exact-OID hydration | Fetching a missing root and its dependencies permits local upload-pack | Request-driven caching does not require a full mirror |
+| Shallow client from a complete cache | Native upload-pack emits shallow-info without turning the server cache into a shallow repository | Client depth and server object completeness are different |
+| Negotiation-only fetch | v2 can return acknowledgments without a pack | Do not assume every fetch POST is the final pack response |
+| Initial v2 advertisement | Capabilities are advertised separately from branch refs | Discovery GET and ls-refs POST are distinct stages |
 
-脚本强制使用 SHA-1，目的是给出可复现的最小验证；生产实现还需要 SHA-256、客户端版本及编码矩阵。实验通过 `git upload-pack --stateless-rpc` 验证协议字节，没有启动 HTTP 或 SSH 网络服务。
-
-关于任意 OID 的结果，还同时检查了当前 Git 文档中的 v2 `want <oid>` 定义，以及 Git 源码的 `parse_want()` 路径。它不应被描述成特定 CDN 的漏洞或特定托管服务的 ACL 结论；风险来自 CDN 在实时鉴权后把共享、保留历史的本地对象库直接交给这个原语。
+These probes establish Git primitives, not a complete network service conformance test. The script forces SHA-1. Authentication, HTTP encoding, site routing and real-client behavior are covered by the Go integration tests described in [Testing](testing.md).

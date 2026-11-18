@@ -1,34 +1,29 @@
-# Cache capacity and repository status checks
+# Cache policy
 
-## Persistent cache policy
+## Persistent capacity
 
-`max_cache_bytes` defaults to 20 GiB. The admission budget covers regular-file lengths in managed `repos/<identity>/<credential>/` scopes. It includes pack/index files, refs and repository metadata, and is shared across upstreams and credential scopes in one cache directory.
+`max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/<credential>/` scopes, including packs, indexes, refs and repository metadata. One cache directory shares that budget across sites and credentials.
 
-Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then removes oldest scopes if an existing cache is over the configured limit. Before publishing new data, the store reserves additional capacity and evicts the least recently used idle scopes. Active and queued leases pin an entry, including while staging borrows its objects through alternates. A spool response can finish transmitting after its repository lease has ended because the response file is independent of the object store.
+Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Active and queued leases pin their entry, including while staging reads its objects through alternates.
 
-Oversized repositories and capacity pinned by other active jobs use upstream passthrough. A future request for an evicted repository hydrates it again. Growth of each staging repository is checked every 200 ms and before publication, using the same limit. `tmp/`, directory/block overhead and store infrastructure are outside the persistent budget; concurrent staging and response spools can consume additional disk space. The limit is not a filesystem quota.
+LRU removes whole scopes, not individual packs or branches. An evicted scope hydrates again on demand. A scope larger than the budget or capacity pinned by active jobs uses upstream passthrough. Old `refs/cache/roots/` are not expired individually; object-level Git GC is not implemented.
 
-Metrics expose current cache bytes, maximum bytes, capacity reservations, managed entries, eviction count and evicted bytes. Policy tests cover LRU ordering, restart recovery, lowering the limit, concurrent admission, pinned/queued leases, oversized fallback, staging cancellation and refetch after eviction.
+The repository lease can end before a spool response finishes transmission because the response file is independent of cached objects. This permits client transfers to overlap without allowing eviction during pack generation.
 
-## Missing GitHub repository
+## Temporary storage
 
-The real example `https://github.com/banyan-xxx/banyan` produced these upstream results:
+The persistent budget excludes directory/block overhead, store infrastructure and `tmp/`. Each staging repository is checked against the same limit before publication and every 200 ms while fetching. Writes can temporarily exceed that check between samples. Response files have a separate per-response limit through `max_response_bytes`.
 
-| Endpoint | Status |
-| --- | --- |
-| Git smart info/refs | 401 with authentication challenge |
-| Repository REST API | 404 |
-| Public owner API | 404 |
-| Repository web page | 404 |
+Concurrent staging and response files need additional space. These limits are admission controls, not a filesystem quota on the entire cache directory. Track disk usage in addition to exported cache metrics.
 
-GitHub's Git endpoint intentionally conflates missing and inaccessible repositories. The CDN now checks the public owner endpoint only after a GitHub 401. A valid JSON `Not Found` response for the owner changes the Git response to 404 and removes the challenge. It sends no caller credentials to this public lookup. Existing owners, API errors/rate limits and unknown visibility preserve 401. A repository API 404 alone is insufficient because it can conceal private repositories.
+## Metrics and verification
 
-This rule is limited to github.com; other upstreams keep their status. It is not a general mechanism for distinguishing a missing repository from a private repository beneath an existing owner.
+Metrics expose cache bytes, capacity, pending reservation bytes, managed entries, eviction count and evicted bytes. Local tests cover LRU order, restart recovery, a smaller startup budget, active/waiting leases, concurrent admission, oversized fallback, growing staging cancellation and refetch after eviction.
 
-Verified against the actual GitHub example through the updated binary:
+See [Testing](testing.md) for the repeatable validation commands. Generated metrics, traces, run-specific service IDs and timings belong in ignored artifacts.
 
-- Both `/github/banyan-xxx/banyan/info/refs` and the `.git` form return 404 without `WWW-Authenticate`.
-- Direct POST to upload-pack also returns 404.
-- Standard Git clone exits 128 with `repository ... not found`, without the username prompt error.
-- Integration tests retain 401 for an existing owner, rate limits, invalid metadata, service failures and non-GitHub hosts.
+## GitHub missing-repository responses
 
+GitHub's Git endpoint can challenge a missing or inaccessible repository with 401. After that response, the CDN checks the public owner endpoint without sending caller credentials. A valid JSON `Not Found` response for the owner changes the Git response to 404 and removes the login challenge.
+
+Existing owners, metadata failures/rate limits and unknown visibility preserve 401. A repository API 404 alone is insufficient because it may conceal a private repository. This is an owner-based exception for github.com, not a universal method to distinguish nonexistent repositories from private repositories under an existing owner. Other Git hosts keep their upstream status.

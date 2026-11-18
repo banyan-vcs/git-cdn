@@ -159,11 +159,13 @@ Integration tests run an authenticated native `git http-backend` and standard Gi
 
 Cache policy tests cover LRU order, restart recovery, smaller startup budgets, active/waiting lease protection, concurrent capacity reservations, oversized fallback, refetch after eviction, and cancellation of growing staging data. GitHub response tests cover confirmed missing owners, preserved authentication for unknown visibility, and metadata failures.
 
+See [Testing](docs/testing.md) for protocol coverage, optional live validation and performance measurement. With a multi-site service running and its binary built, select a public repository explicitly:
+
 ```sh
-go run ./scripts/live-repository --concurrency 6 --repository git/git
+go run ./scripts/live-repository --repository git/git --concurrency 6
 ```
 
-The script contacts GitHub, retains results and client repositories under `bin/live-tests/`, and stops its temporary services.
+The script contacts GitHub, retains results and client repositories under `bin/live-tests/`, and stops its temporary services. Repositories such as `git/git` and `redis/redis` provide recognizable workloads. Single-run durations are observations, not a performance baseline; keep generated reports out of source control.
 
 The protocol parser also has a fuzz target:
 
@@ -173,8 +175,9 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 
 ## Design and protocol evidence
 
-- [Design](docs/design.md): architecture, authorization boundaries, HTTP/SSH feasibility, cache consistency, and implementation stages (Chinese).
-- [Protocol probes](docs/protocol-probes.md): six local Git checks and their implications (Chinese).
+- [Design](docs/design.md): architecture, authorization boundaries, cache consistency and performance tradeoffs.
+- [Cache policy](docs/cache-policy.md): size admission, LRU, lease protection and GitHub status handling.
+- [Protocol probes](docs/protocol-probes.md): local Git checks and their implications.
 - [Probe script](scripts/protocol-probe/main.go): Go standard library and native Git; no network or personal credentials.
 
 SSH will require platform delegation, a configured user credential mapping, or explicit agent forwarding. See the design document.

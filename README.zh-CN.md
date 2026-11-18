@@ -161,11 +161,13 @@ go vet ./...
 
 容量测试覆盖 LRU 顺序、重启恢复、降低上限、活动/排队租约保护、并发容量预留、超大仓库回源、淘汰后重新获取和 staging 增长取消。GitHub 状态测试覆盖 owner 确认不存在、可见性未知时保留鉴权，以及元数据服务失败。
 
+协议覆盖、可选真实仓库验证及性能测量方法见 [测试说明](docs/testing.md)。已有 multi 服务运行且二进制已构建时，显式选择公开项目：
+
 ```sh
-go run ./scripts/live-repository --concurrency 6 --repository git/git
+go run ./scripts/live-repository --repository git/git --concurrency 6
 ```
 
-该脚本访问真实 GitHub，保留结果及客户端仓库于 `bin/live-tests/`，并自行关闭临时测试服务。
+该脚本访问真实 GitHub，保留结果及客户端仓库于 `bin/live-tests/`，并自行关闭临时测试服务。推荐使用 `git/git`、`redis/redis` 等知名项目。单次耗时仅是观测值，不是性能基线；生成的报告不纳入版本控制。
 
 协议解析器另有 fuzz 入口：
 
@@ -175,8 +177,9 @@ go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
 
 ## 设计及协议证据
 
-- [设计方案](docs/design.md)：Go 架构、鉴权边界、HTTP / SSH 可行性、缓存一致性、实施路线。
-- [协议实验](docs/protocol-probes.md)：六项本地验证及运行方法。
+- [设计方案](docs/design.md)：架构、鉴权边界、缓存一致性及性能权衡。
+- [缓存策略](docs/cache-policy.md)：容量准入、LRU、租约保护和 GitHub 状态处理。
+- [协议实验](docs/protocol-probes.md)：本地 Git 验证及其设计依据。
 - [实验脚本](scripts/protocol-probe/main.go)：仅依赖 Go 标准库和原生 Git，不访问网络、不使用个人凭据。
 
 SSH 后续需要平台用户作用域委托、已配置用户凭据映射或显式 agent forwarding，方案见设计文档。
