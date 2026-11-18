@@ -5,6 +5,7 @@ upstream:
 
 listen: 127.0.0.1:8080
 cache_dir: ~/.git-cdn/caches
+max_cache_bytes: 21474836480 # 20 GiB, LRU across repository scopes
 git_binary: git
 auth_headers: [Authorization]
 max_request_bytes: 8388608

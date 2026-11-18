@@ -17,11 +17,12 @@ import (
 type Mode string
 
 const (
-	ModeSingle        Mode = "single"
-	ModeMulti         Mode = "multi"
-	SingleUpstreamID       = "default"
-	DefaultConfigPath      = "~/.git-cdn/config.yaml"
-	DefaultCacheDir        = "~/.git-cdn/caches"
+	ModeSingle           Mode  = "single"
+	ModeMulti            Mode  = "multi"
+	SingleUpstreamID           = "default"
+	DefaultConfigPath          = "~/.git-cdn/config.yaml"
+	DefaultCacheDir            = "~/.git-cdn/caches"
+	DefaultMaxCacheBytes int64 = 20 << 30
 )
 
 // ExpandHome resolves the current user's home prefix without expanding other users or variables.
@@ -57,6 +58,7 @@ type Config struct {
 	MaxRequestBytes  int64               `json:"max_request_bytes" yaml:"max_request_bytes"`
 	MaxRefsBytes     int64               `json:"max_refs_bytes" yaml:"max_refs_bytes"`
 	MaxResponseBytes int64               `json:"max_response_bytes" yaml:"max_response_bytes"`
+	MaxCacheBytes    int64               `json:"max_cache_bytes" yaml:"max_cache_bytes"`
 	MaxConcurrentGit int                 `json:"max_concurrent_git" yaml:"max_concurrent_git"`
 	FetchTimeout     string              `json:"fetch_timeout" yaml:"fetch_timeout"`
 	GitTimeout       string              `json:"git_timeout" yaml:"git_timeout"`
@@ -159,7 +161,7 @@ func (c *Config) Validate() error {
 	for _, limit := range []struct {
 		p *int64
 		d int64
-	}{{&c.MaxRequestBytes, 8 << 20}, {&c.MaxRefsBytes, 16 << 20}, {&c.MaxResponseBytes, 1 << 30}} {
+	}{{&c.MaxRequestBytes, 8 << 20}, {&c.MaxRefsBytes, 16 << 20}, {&c.MaxResponseBytes, 1 << 30}, {&c.MaxCacheBytes, DefaultMaxCacheBytes}} {
 		if *limit.p == 0 {
 			*limit.p = limit.d
 		}

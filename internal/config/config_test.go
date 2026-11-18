@@ -44,6 +44,7 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 			c, err := loadYAML(t, "# Configuration supports comments\n"+test.body)
 			require.NoError(t, err)
 			require.EqualValues(t, test.mode, c.Mode, "unexpected mode or defaults: %+v", c)
+			require.EqualValues(t, DefaultMaxCacheBytes, c.MaxCacheBytes, "unexpected mode or defaults: %+v", c)
 			require.EqualValues(t, filepath.Join(home, ".git-cdn", "caches"), c.CacheDir, "unexpected mode or defaults: %+v", c)
 			require.EqualValues(t, "127.0.0.1:8080", c.Listen, "unexpected mode or defaults: %+v", c)
 			require.EqualValues(t, "2m", c.FetchTimeout, "unexpected mode or defaults: %+v", c)
@@ -108,6 +109,7 @@ func TestYAMLRejectsAmbiguousAndMalformedConfiguration(t *testing.T) {
 		{"empty document", "# empty\n"},
 		{"invalid timeout", valid + "fetch_timeout: forever\n"},
 		{"invalid size", valid + "max_request_bytes: -1\n"},
+		{"invalid cache size", valid + "max_cache_bytes: -1\n"},
 		{"TLS pair missing", valid + "tls_cert: server.pem\n"},
 		{"unsafe single URL", "mode: single\nupstream:\n  url: https://user:secret@example.com\n"},
 		{"invalid site ID", "mode: multi\nupstreams:\n  bad/id:\n    url: https://example.com\n"},

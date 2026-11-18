@@ -301,3 +301,44 @@ func TestCacheDirectoryCannotBeSharedByProcesses(t *testing.T) {
 	_, err := New(s.config, nil)
 	require.Error(t, err, "second server acquired an active cache directory")
 }
+
+func TestRepositoryLRUEvictsAndRefetches(t *testing.T) {
+	f := newFixture(t)
+	for _, name := range []string{"Other", "Third"} {
+		path := filepath.Join(filepath.Dir(filepath.Dir(f.repo)), name, "Repo.git")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+		testGit(t, "", "clone", "--quiet", "--bare", f.repo, path)
+	}
+	s, h := newCDN(t, f, nil)
+	request := func(group, expected string) {
+		t.Helper()
+		r := postFetch(t, h.URL, "/gitlab/"+group+"/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil)
+		require.EqualValues(t, expected, r.Header.Get("X-GitCDN-Cache-Status"), "%s expected %s: %v", group, expected, r.Header)
+		responseBody(t, r)
+	}
+	request("Group", "MISS")
+	firstSize := s.store.Stats().Bytes
+	// Measure the fixture first, then use a separate store that fits two scopes.
+	s, h = newCDN(t, f, func(c *config.Config) { c.MaxCacheBytes = firstSize*2 + 4096 })
+	request("Group", "MISS")
+	request("Other", "MISS")
+	request("Group", "HIT")
+	request("Third", "MISS")
+	stats := s.store.Stats()
+	require.EqualValues(t, 1, stats.Evictions, "LRU did not stay within limit: %+v", stats)
+	require.False(t, stats.Bytes > stats.MaxBytes, "LRU did not stay within limit: %+v", stats)
+	request("Other", "MISS")
+	request("Other", "HIT")
+	require.EqualValues(t, 2, s.store.Stats().Evictions, "evicted repository was not fetched again")
+}
+
+func TestOversizedRepositoryFallsBackWithoutPublishing(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, func(c *config.Config) { c.MaxCacheBytes = 1 })
+	r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil)
+	require.EqualValues(t, "BYPASS", r.Header.Get("X-GitCDN-Cache-Status"), "oversized repository did not fall back")
+	require.True(t, bytes.Contains(responseBody(t, r), []byte("packfile\n")), "fallback did not return a valid pack")
+	require.EqualValues(t, 0, s.local.Load(), "oversized repository entered persistent cache")
+	require.EqualValues(t, 0, s.store.Stats().Bytes, "oversized repository entered persistent cache")
+	require.EqualValues(t, 0, s.store.Stats().ReservedBytes, "oversized repository entered persistent cache")
+}

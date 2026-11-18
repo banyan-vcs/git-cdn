@@ -39,7 +39,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := cache.Open(c.CacheDir, git)
+	store, err := cache.Open(c.CacheDir, git, c.MaxCacheBytes)
 	if err != nil {
 		return nil, err
 	}

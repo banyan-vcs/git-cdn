@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -25,15 +24,12 @@ func (l *Lease) complete(ctx context.Context, roots []string, all bool) bool {
 // Ensure receives objects in a separate repository before publishing complete roots.
 func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, roots []string) (bool, error) {
 	g := l.store.Git
-	if err := os.MkdirAll(filepath.Dir(l.Dir), 0700); err != nil {
+	if err := l.store.ensureScope(l.entry.key); err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(filepath.Join(l.Dir, "HEAD")); os.IsNotExist(err) {
-		if err := g.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", l.Dir); err != nil {
-			return false, err
-		}
-	}
-	if l.complete(ctx, roots, false) {
+	_, existsErr := os.Stat(filepath.Join(l.Dir, "HEAD"))
+	exists := existsErr == nil
+	if exists && l.complete(ctx, roots, false) {
 		return true, nil
 	}
 	stage, err := os.MkdirTemp(l.store.Tmp, "hydrate-")
@@ -45,7 +41,7 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 		return false, err
 	}
 	// Use previous roots for negotiation only if their dependency graph is intact.
-	if l.complete(ctx, nil, true) {
+	if exists && l.complete(ctx, nil, true) {
 		objects := filepath.Join(l.Dir, "objects")
 		if err := os.WriteFile(filepath.Join(stage, "objects", "info", "alternates"), []byte(objects+"\n"), 0600); err != nil {
 			return false, err
@@ -74,35 +70,14 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 	for _, root := range roots {
 		args = append(args, root+":refs/cache/roots/"+root)
 	}
-	if err := g.Run(ctx, stage, nil, io.Discard, nativegit.ConfigEnvironment(pairs), args...); err != nil {
+	if err := l.fetchBounded(ctx, stage, nativegit.ConfigEnvironment(pairs), args...); err != nil {
 		return false, err
 	}
 	if err := g.Run(ctx, stage, strings.NewReader(strings.Join(roots, "\n")+"\n"), io.Discard, nil, "rev-list", "--objects", "--missing=error", "--quiet", "--stdin"); err != nil {
 		return false, err
 	}
-	files, err := os.ReadDir(filepath.Join(stage, "objects", "pack"))
-	if err != nil {
+	if err := l.publish(ctx, stage, roots, exists); err != nil {
 		return false, err
-	}
-	// Install pack data before its index, and pin roots only after all objects exist.
-	for _, suffix := range []string{".pack", ".idx", ".rev"} {
-		for _, file := range files {
-			if strings.HasSuffix(file.Name(), suffix) {
-				if err := os.Rename(filepath.Join(stage, "objects", "pack", file.Name()), filepath.Join(l.Dir, "objects", "pack", file.Name())); err != nil {
-					return false, err
-				}
-			}
-		}
-	}
-	var updates strings.Builder
-	for _, root := range roots {
-		fmt.Fprintf(&updates, "update refs/cache/roots/%s %s\n", root, root)
-	}
-	if err := g.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
-		return false, err
-	}
-	if !l.complete(ctx, roots, false) {
-		return false, fmt.Errorf("published roots have incomplete dependencies")
 	}
 	return false, nil
 }

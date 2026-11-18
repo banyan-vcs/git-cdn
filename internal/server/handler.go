@@ -24,6 +24,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/metrics" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		fmt.Fprintf(w, "gitcdn_local_requests_total %d\ngitcdn_hydrations_total %d\ngitcdn_passthrough_requests_total %d\ngitcdn_auth_denied_total %d\n", s.local.Load(), s.hydrated.Load(), s.proxied.Load(), s.authDenied.Load())
+		stats := s.store.Stats()
+		fmt.Fprintf(w, "gitcdn_cache_bytes %d\ngitcdn_cache_max_bytes %d\ngitcdn_cache_reserved_bytes %d\ngitcdn_cache_entries %d\ngitcdn_cache_evictions_total %d\ngitcdn_cache_evicted_bytes_total %d\n", stats.Bytes, stats.MaxBytes, stats.ReservedBytes, stats.Entries, stats.Evictions, stats.EvictedBytes)
 		return
 	}
 	rt, err := s.resolve(r)
