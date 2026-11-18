@@ -1,0 +1,19 @@
+# Multi-site mode: /<upstream-id>/group/repo[.git] selects an upstream.
+mode: multi
+upstreams:
+  gitlab:
+    url: https://gitlab.com
+  github:
+    url: https://github.com
+
+listen: 127.0.0.1:8080
+cache_dir: ~/.git-cdn/caches
+git_binary: git
+auth_headers: [Authorization]
+max_request_bytes: 8388608
+max_refs_bytes: 16777216
+max_response_bytes: 1073741824
+max_concurrent_git: 4
+fetch_timeout: 2m
+git_timeout: 2m
+upstream_timeout: 30s

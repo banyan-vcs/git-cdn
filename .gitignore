@@ -1,0 +1,6 @@
+/cache/
+/bin/
+/config.json
+/config.yaml
+*.test
+coverage.out
