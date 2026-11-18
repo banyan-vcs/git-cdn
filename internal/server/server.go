@@ -21,6 +21,7 @@ type Server struct {
 	transport    *http.Transport
 	client       *http.Client
 	upstreams    map[string]*url.URL
+	githubAPI    *url.URL
 	logger       *slog.Logger
 	gitTimeout   time.Duration
 	fetchTimeout time.Duration
@@ -62,6 +63,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	s.fetchTimeout, _ = time.ParseDuration(c.FetchTimeout)
 	s.authTimeout, _ = time.ParseDuration(c.UpstreamTimeout)
 	s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	s.githubAPI, _ = url.Parse("https://api.github.com")
 	upstreams := c.Upstreams
 	if c.Mode == config.ModeSingle {
 		upstreams = map[string]config.Upstream{config.SingleUpstreamID: *c.Upstream}

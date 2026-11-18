@@ -47,6 +47,12 @@ func (s *Server) discover(r *http.Request, rt route) (protocol.Snapshot, *http.R
 		return protocol.Snapshot{}, nil, errors.New("invalid or oversized upstream refs response")
 	}
 	if response.StatusCode != http.StatusOK {
+		if s.normalizeGitHubNotFound(r, rt, response) {
+			data, err = io.ReadAll(response.Body)
+			if err != nil {
+				return protocol.Snapshot{}, nil, err
+			}
+		}
 		response.Body = io.NopCloser(bytes.NewReader(data))
 		response.ContentLength = int64(len(data))
 		return protocol.Snapshot{}, response, nil
@@ -83,6 +89,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, rt route, reason 
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
+			s.normalizeGitHubNotFound(r, rt, response)
 			response.Header.Set("X-GitCDN-Cache-Status", "BYPASS")
 			if location := rewriteLocation(rt, response); location != "" {
 				response.Header.Set("Location", location)
