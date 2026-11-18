@@ -23,6 +23,29 @@ func testStore(t *testing.T, limit int64) *Store {
 	return s
 }
 
+func TestRestartRemovesOrphanedTemporaryFiles(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root, nil, 1024)
+	require.NoError(t, err)
+	for _, name := range []string{"response-old", "hydrate-old", "view-old"} {
+		path := filepath.Join(s.Tmp, name)
+		require.NoError(t, os.MkdirAll(path, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(path, "data"), []byte("orphan"), 0600))
+	}
+	require.NoError(t, s.Close())
+	s, err = Open(root, nil, 1024)
+	require.NoError(t, err)
+	defer s.Close()
+	files, err := os.ReadDir(s.Tmp)
+	require.NoError(t, err, "orphaned temporary files retained: %v %v", files, err)
+	require.Len(t, files, 0, "orphaned temporary files retained: %v %v", files, err)
+	{
+		info, err := os.Stat(filepath.Join(root, ".scope-key"))
+		require.NoError(t, err, "persistent scope key removed")
+		require.EqualValues(t, 32, info.Size(), "persistent scope key removed")
+	}
+}
+
 func testLease(t *testing.T, s *Store, name string) *Lease {
 	t.Helper()
 	l, err := s.Acquire(context.Background(), s.Key(name, "credential"))

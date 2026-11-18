@@ -13,20 +13,6 @@ import (
 	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
 
-type limitedWriter struct {
-	w    io.Writer
-	left int64
-}
-
-func (w *limitedWriter) Write(p []byte) (int, error) {
-	if int64(len(p)) > w.left {
-		return 0, errors.New("local response exceeds size limit")
-	}
-	n, err := w.w.Write(p)
-	w.left -= int64(n)
-	return n, err
-}
-
 func unique(values []string) []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -39,7 +25,7 @@ func unique(values []string) []string {
 	return result
 }
 
-func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*os.File, string, error) {
+func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, string, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.gitTimeout)
 	defer cancel()
 	headers := s.headers(r)
@@ -104,18 +90,18 @@ func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapsh
 		return nil, "", err
 	}
 	defer os.RemoveAll(view)
-	file, err := os.CreateTemp(s.store.Tmp, "response-")
+	output, err := os.CreateTemp(s.store.Tmp, "response-")
 	if err != nil {
 		return nil, "", err
 	}
+	file := &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
 	failed := true
 	defer func() {
 		if failed {
 			file.Close()
-			os.Remove(file.Name())
 		}
 	}()
-	err = s.git.Run(ctx, view, bytes.NewReader(data), &limitedWriter{w: file, left: s.config.MaxResponseBytes}, map[string]string{"GIT_PROTOCOL": "version=2"}, "upload-pack", "--stateless-rpc", view)
+	err = s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "upload-pack", "--stateless-rpc", view)
 	if err != nil {
 		return nil, "", err
 	}

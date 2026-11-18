@@ -33,6 +33,8 @@ go build -o bin/git-cdn ./cmd/git-cdn
 cache_dir: /data/git-cdn/caches
 ```
 
+非回环 HTTP 监听默认需要 TLS 或配置 `trusted_proxy_cidrs`；受信代理必须重写 `X-Forwarded-Proto: https`，未受信地址不能通过伪造此头绕过检查。非回环上游默认要求 HTTPS。仅在受控内部网络使用 `allow_insecure_http: true`。
+
 默认监听 `127.0.0.1:8080`。在独立 CDN 域名的 TLS 反向代理后运行，或在 YAML 中配置 `tls_cert`、`tls_key` 直接提供 HTTPS。前置代理需要传递 `Git-Protocol` 和配置的认证头，并允许 Git 上传和下载的请求体。
 
 ## 单站点和多站点
@@ -58,14 +60,16 @@ mode: multi
 upstreams:
   gitlab:
     url: https://gitlab.com
+    credential_host: git-cdn-gitlab.example
   github:
     url: https://github.com
+    credential_host: git-cdn-github.example
 ```
 
 ```text
-https://git-cdn.example/gitlab/group/repo[.git]
+https://git-cdn-gitlab.example/gitlab/group/repo[.git]
     → https://gitlab.com/group/repo.git
-https://git-cdn.example/github/owner/repo[.git]
+https://git-cdn-github.example/github/owner/repo[.git]
     → https://github.com/owner/repo.git
 ```
 
@@ -87,11 +91,11 @@ git clone https://git-cdn.example/group/repo.git
 git config --global url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 ```
 
-多站点模式将 CDN URL 中的路径改为 `/gitlab/group/repo.git`，改写规则改为 `url."https://git-cdn.example/gitlab/".insteadOf`。每个站点分别配置对应的原站前缀。
+多站点模式使用对应的 `credential_host`，路径为 `/gitlab/group/repo.git`，改写规则改为 `url."https://git-cdn-gitlab.example/gitlab/".insteadOf`。每个站点分别配置对应的原站前缀。
 
 此规则同时影响 push；CDN 会透传 receive-pack discovery 和 push 请求。若采用逐 remote 的 fetch/push URL，可将 fetch 指向 CDN、push 指向原站，具体配置及全局改写之间的关系见设计文档。
 
-Git credential helper 需要为 **CDN 的域名**提供目标上游接受的凭据。凭据不会从原站 host 自动迁移。默认只转发 `Authorization`，支持上游接受的 Basic/PAT 或 Bearer；需要 Cookie 或其他认证头时将其明确添加到 `auth_headers`。多上游共享域名时，helper 应按路径选择凭据，可开启 `credential.useHttpPath`。代理不保存明文凭据，也不提供 CDN token 到原站身份的兑换服务。
+Git credential helper 需要为 **CDN 的域名**提供目标上游接受的凭据。凭据不会从原站 host 自动迁移。默认只转发 `Authorization`，支持上游接受的 Basic/PAT 或 Bearer；需要 Cookie 或其他认证头时将其明确添加到 `auth_headers`。两个以上上游默认需要不同的 `credential_host`，带凭据请求的 Host 必须与目标站点匹配，错误匹配返回 421 且不回源。需要共享域名时显式配置 `allow_shared_credential_host: true`，并启用 `credential.useHttpPath`、按站点路径配置 helper。`X-Forwarded-*`、`X-Remote-User` 等代理身份头不能配置为客户端凭据头。代理不保存明文凭据，也不提供 CDN token 到原站身份的兑换服务。
 
 ## 已实现行为
 
@@ -129,11 +133,16 @@ GitHub 的 Git 接口也会对不存在的仓库返回 401。若公开 owner API
 | `max_refs_bytes` | 16 MiB | 内部 ls-refs 响应上限 |
 | `max_response_bytes` | 1 GiB | 本地生成响应的磁盘暂存上限；超限回源 |
 | `max_concurrent_git` | 4 | 原生 Git 子进程并发数 |
+| `max_concurrent_requests` | 16 | 解析、回源和传输全过程的活动 Git 请求上限 |
+| `max_requests_per_second` | 64 | 全实例 Git 请求速率，初始突发额度为相同数值 |
+| `max_temp_response_bytes` | 4 GiB | 所有未完成本地响应的总磁盘预算，文件删除后释放 |
+| `write_idle_timeout` | 30s | 单次写出/flush 的停滞期限；持续写出的长响应可继续 |
+| `request_timeout` | 10m | Git 请求总期限，含入站、回源和响应传输 |
 | `fetch_timeout` | 2m | 单次对象补齐的期限 |
 | `git_timeout` | 2m | 本地操作总期限，含排队、校验、补齐和打包 |
 | `upstream_timeout` | 30s | 实时 refs 探测的期限 |
 
-本地路径最多处理 64 个 wants、128 个 haves，以及 include-tag 请求中的 128 个当前标签；超出时回源。v2 请求支持 gzip，透传时保留原始压缩输入；其他编码直接回源。原站受信路径前缀内的规范化重定向会改写回 CDN 路由。
+每个 v2 命令最多 4096 个 pkt-line，解析时不建立完整包数组。本地路径最多处理 64 个 wants、128 个 haves，以及 include-tag 请求中的 128 个当前标签；超出时回源。v2 请求支持 gzip，透传时保留原始压缩输入；其他编码直接回源。原站受信路径前缀内的规范化重定向会改写回 CDN 路由。
 
 持久仓库缓存已支持 LRU，默认容量为 20 GiB。访问时间跨重启保留；启动时若旧缓存超过新上限，会先淘汰。发布对象前预留容量并移除最久未使用的空闲“仓库＋凭据作用域”。活动租约和排队请求会保护其作用域，避免补齐、alternates 和打包与淘汰竞争。单个仓库超过上限，或所有空间都被活动请求占用时，完整回源；已淘汰的仓库可再次按需获取。
 
@@ -141,11 +150,13 @@ GitHub 的 Git 接口也会对不存在的仓库返回 401。若公开 owner API
 max_cache_bytes: 21474836480 # 20 GiB
 ```
 
-容量统计包括受管理 `repos/` 作用域中的常规文件长度及 Git 元数据，不包括目录/磁盘块开销、进程锁、HMAC key 和 `tmp/`。每次 staging 下载在发布前及下载期间每 200 ms 检查相同上限，检查间隔内的临时写入可能短暂超过它。响应暂存仍由 `max_response_bytes` 限制。并发 staging 和响应文件需要额外磁盘空间：这是持久缓存的准入上限，不是整个缓存目录的文件系统硬配额。后台预热、对象级 Git GC 和跨节点缓存协调尚未实现。服务独立管理 cache 仓库，运行中不要在其中执行 prune/删除对象。
+容量统计包括受管理 `repos/` 作用域中的常规文件长度及 Git 元数据，不包括目录/磁盘块开销、进程锁、HMAC key 和 `tmp/`。每次 staging 下载在发布前及下载期间每 200 ms 检查相同上限，检查间隔内的临时写入可能短暂超过它。响应暂存按 `max_response_bytes` 限制单文件，并由 `max_temp_response_bytes` 限制所有活动响应文件的总字节数。预算不足时，在响应提交前回源。启动时持有目录锁清理上次进程遗留的临时文件。并发 staging 和响应文件需要额外磁盘空间：这是持久缓存的准入上限，不是整个缓存目录的文件系统硬配额。后台预热、对象级 Git GC 和跨节点缓存协调尚未实现。服务独立管理 cache 仓库，运行中不要在其中执行 prune/删除对象。
 
 原站 repo 路径被删除后重新用于另一仓库时，目前尚无稳定 repository ID 校验；应使旧路径的缓存失效。HTTP v2 的本地加速依赖原站支持该协议；部署时需验证所选上游的协议能力及凭据行为。
 
-健康检查 `GET /healthz`。`GET /metrics` 提供 local/hydration/passthrough/auth-denied 计数，以及缓存字节数、上限、容量预留、作用域数量、淘汰次数和淘汰字节数。日志不包含认证头或原站 Git stderr。
+入口并发或速率超限返回 503 和 `Retry-After: 1`，不读取 Git 请求体。健康检查与指标不占用 Git 请求额度。所有 Git 回源响应也设置 `Cache-Control: no-store`。完整配置迁移及资源边界见 [HTTP 安全说明](docs/http-security.md)。
+
+健康检查 `GET /healthz`。`GET /metrics` 提供 local/hydration/passthrough/auth-denied 计数，以及缓存字节数、上限、容量预留、作用域数量、淘汰次数和淘汰字节数，以及活动请求、限流拒绝和暂存响应字节数。日志不包含认证头或原站 Git stderr。
 
 ## 验证
 

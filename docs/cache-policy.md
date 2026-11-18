@@ -12,9 +12,9 @@ The repository lease can end before a spool response finishes transmission becau
 
 ## Temporary storage
 
-The persistent budget excludes directory/block overhead, store infrastructure and `tmp/`. Each staging repository is checked against the same limit before publication and every 200 ms while fetching. Writes can temporarily exceed that check between samples. Response files have a separate per-response limit through `max_response_bytes`.
+The persistent budget excludes directory/block overhead, store infrastructure and `tmp/`. Each staging repository is checked against the same limit before publication and every 200 ms while fetching. Writes can temporarily exceed that check between samples. Local response files use `max_response_bytes` per file and a global `max_temp_response_bytes` budget (4 GiB by default). The global reservation remains held after Git process completion until file removal; exhausted generation falls back before committing local output. Startup clears orphaned service temporary files under the directory lock.
 
-Concurrent staging and response files need additional space. These limits are admission controls, not a filesystem quota on the entire cache directory. Track disk usage in addition to exported cache metrics.
+Concurrent staging and response files need additional space. These limits are admission controls, not a filesystem quota on the entire cache directory. Track disk usage in addition to exported cache metrics. Request admission and transfer deadlines bound active responses; see [HTTP security](http-security.md).
 
 ## Metrics and verification
 

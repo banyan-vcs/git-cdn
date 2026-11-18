@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -72,4 +73,46 @@ func FuzzParseFetch(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestFetchPacketAndObjectCountsAreBounded(t *testing.T) {
+	{
+		_, err := Decode([]byte(strings.Repeat("0004", MaxCommandPackets+1)))
+		require.Error(t, err, "unbounded packet list accepted")
+	}
+	data := append(Encode("command=fetch\n"), "0001"...)
+	data = append(data, []byte(strings.Repeat("0004", MaxCommandPackets))...)
+	data = append(data, "0000"...)
+	{
+		_, err := ParseFetch(data)
+		require.Error(t, err, "unbounded command accepted")
+	}
+	for _, test := range []struct {
+		field                   string
+		count, wantCap, haveCap int
+	}{
+		{"want " + strings.Repeat("a", 40), 65, 64, 0},
+		{"have " + strings.Repeat("a", 40), 129, 0, 128},
+	} {
+		lines := make([]string, test.count)
+		for i := range lines {
+			lines[i] = test.field
+		}
+		parsed, err := ParseFetch(request(lines...))
+		require.NoError(t, err, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
+		require.False(t, parsed.Supported, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
+		require.Len(t, parsed.Wants, test.wantCap, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
+		require.Len(t, parsed.Haves, test.haveCap, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
+	}
+}
+
+func TestRefsStreamingDoesNotUseCommandPacketLimit(t *testing.T) {
+	var data []byte
+	for i := range MaxCommandPackets + 1 {
+		data = append(data, Encode(strings.Repeat("a", 40)+" refs/heads/branch"+fmt.Sprint(i)+"\n")...)
+	}
+	data = append(data, "00000002"...)
+	snapshot, err := ParseRefs(data)
+	require.NoError(t, err, "large refs snapshot: %d %v", len(snapshot.Refs), err)
+	require.Len(t, snapshot.Refs, MaxCommandPackets+1, "large refs snapshot: %d %v", len(snapshot.Refs), err)
 }

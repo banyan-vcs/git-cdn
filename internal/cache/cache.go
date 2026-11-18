@@ -51,6 +51,19 @@ func Open(root string, git *nativegit.Runner, maxBytes int64) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
+	// The directory lock excludes live requests while removing files left by a crash.
+	files, err := os.ReadDir(s.Tmp)
+	if err == nil {
+		for _, file := range files {
+			if err = os.RemoveAll(filepath.Join(s.Tmp, file.Name())); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		s.Close()
+		return nil, err
+	}
 	secretPath := filepath.Join(root, ".scope-key")
 	s.secret, err = os.ReadFile(secretPath)
 	if os.IsNotExist(err) {

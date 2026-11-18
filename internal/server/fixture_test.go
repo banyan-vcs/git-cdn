@@ -151,7 +151,7 @@ func (f *fixture) commit(t *testing.T, content string) {
 
 func newCDN(t *testing.T, f *fixture, modify func(*config.Config)) (*Server, *httptest.Server) {
 	t.Helper()
-	c := config.Config{CacheDir: t.TempDir(), Upstreams: map[string]config.Upstream{"gitlab": {URL: f.origin.URL + "/root"}}}
+	c := config.Config{CacheDir: t.TempDir(), AllowSharedCredentialHost: true, Upstreams: map[string]config.Upstream{"gitlab": {URL: f.origin.URL + "/root"}}}
 	if modify != nil {
 		modify(&c)
 	}
@@ -203,7 +203,7 @@ func responseBody(t *testing.T, r *http.Response) []byte {
 func newYAMLCDN(t *testing.T, body string) (*Server, *httptest.Server) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body += fmt.Sprintf("\ncache_dir: %q\n", t.TempDir())
+	body += fmt.Sprintf("\nallow_shared_credential_host: true\ncache_dir: %q\n", t.TempDir())
 	require.NoError(t, os.WriteFile(path, []byte(body), 0600))
 	c, err := config.Load(path)
 	require.NoError(t, err)

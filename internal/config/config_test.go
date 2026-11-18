@@ -36,7 +36,7 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 		mode Mode
 	}{
 		{"single", "mode: single\nupstream:\n  url: https://gitlab.com\n", ModeSingle},
-		{"multi", "mode: multi\nupstreams:\n  gitlab:\n    url: https://gitlab.com\n  github:\n    url: https://github.com\n", ModeMulti},
+		{"multi", "mode: multi\nupstreams:\n  gitlab:\n    url: https://gitlab.com\n    credential_host: gitlab.cdn.example\n  github:\n    url: https://github.com\n    credential_host: github.cdn.example\n", ModeMulti},
 		{"inferred single", "upstream:\n  url: https://gitlab.com\n", ModeSingle},
 		{"inferred multi with one site", "upstreams:\n  gitlab:\n    url: https://gitlab.com\n", ModeMulti},
 	} {
@@ -51,6 +51,11 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 			require.EqualValues(t, 8<<20, c.MaxRequestBytes, "unexpected mode or defaults: %+v", c)
 			require.Len(t, c.AuthHeaders, 1, "unexpected mode or defaults: %+v", c)
 			require.EqualValues(t, "Authorization", c.AuthHeaders[0], "unexpected mode or defaults: %+v", c)
+			require.EqualValues(t, 16, c.MaxConcurrentRequests, "unsafe resource defaults: %+v", c)
+			require.EqualValues(t, 64, c.MaxRequestsPerSecond, "unsafe resource defaults: %+v", c)
+			require.EqualValues(t, 4<<30, c.MaxTempResponseBytes, "unsafe resource defaults: %+v", c)
+			require.EqualValues(t, "30s", c.WriteIdleTimeout, "unsafe resource defaults: %+v", c)
+			require.EqualValues(t, "10m", c.RequestTimeout, "unsafe resource defaults: %+v", c)
 		})
 	}
 }

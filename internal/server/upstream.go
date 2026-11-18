@@ -90,6 +90,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, rt route, reason 
 		},
 		ModifyResponse: func(response *http.Response) error {
 			s.normalizeGitHubNotFound(r, rt, response)
+			response.Header.Set("Cache-Control", "no-store")
 			response.Header.Set("X-GitCDN-Cache-Status", "BYPASS")
 			if location := rewriteLocation(rt, response); location != "" {
 				response.Header.Set("Location", location)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -15,21 +16,27 @@ import (
 )
 
 type Server struct {
-	config       config.Config
-	git          *nativegit.Runner
-	store        *cache.Store
-	transport    *http.Transport
-	client       *http.Client
-	upstreams    map[string]*url.URL
-	githubAPI    *url.URL
-	logger       *slog.Logger
-	gitTimeout   time.Duration
-	fetchTimeout time.Duration
-	authTimeout  time.Duration
-	local        atomic.Uint64
-	hydrated     atomic.Uint64
-	proxied      atomic.Uint64
-	authDenied   atomic.Uint64
+	config           config.Config
+	git              *nativegit.Runner
+	store            *cache.Store
+	transport        *http.Transport
+	client           *http.Client
+	upstreams        map[string]*url.URL
+	githubAPI        *url.URL
+	logger           *slog.Logger
+	gitTimeout       time.Duration
+	fetchTimeout     time.Duration
+	authTimeout      time.Duration
+	writeIdleTimeout time.Duration
+	requestTimeout   time.Duration
+	requests         *requestLimiter
+	responses        *responseBudget
+	trustedProxies   []*net.IPNet
+	rejected         atomic.Uint64
+	local            atomic.Uint64
+	hydrated         atomic.Uint64
+	proxied          atomic.Uint64
+	authDenied       atomic.Uint64
 }
 
 func New(c config.Config, logger *slog.Logger) (*Server, error) {
@@ -48,6 +55,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	t.Proxy = nil
 	t.DisableCompression = true
 	t.ResponseHeaderTimeout = 30 * time.Second
+	t.MaxConnsPerHost = c.MaxConcurrentRequests
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -58,10 +66,18 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		transport: t,
 		logger:    logger,
 		upstreams: make(map[string]*url.URL),
+		requests:  newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond),
+		responses: &responseBudget{limit: c.MaxTempResponseBytes},
 	}
 	s.gitTimeout, _ = time.ParseDuration(c.GitTimeout)
 	s.fetchTimeout, _ = time.ParseDuration(c.FetchTimeout)
 	s.authTimeout, _ = time.ParseDuration(c.UpstreamTimeout)
+	s.writeIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
+	s.requestTimeout, _ = time.ParseDuration(c.RequestTimeout)
+	for _, cidr := range c.TrustedProxyCIDRs {
+		_, network, _ := net.ParseCIDR(cidr)
+		s.trustedProxies = append(s.trustedProxies, network)
+	}
 	s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.githubAPI, _ = url.Parse("https://api.github.com")
 	upstreams := c.Upstreams

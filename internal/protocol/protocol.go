@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
-const MaxPacketSize = 65520
+const (
+	MaxPacketSize     = 65520
+	MaxCommandPackets = 4096
+	maxLocalWants     = 64
+	maxLocalHaves     = 128
+)
 
 type Packet struct {
 	Control int
@@ -18,28 +23,37 @@ func Encode(line string) []byte {
 	return []byte(fmt.Sprintf("%04x%s", len(line)+4, line))
 }
 
+func nextPacket(data []byte) (Packet, []byte, error) {
+	if len(data) < 4 {
+		return Packet{}, nil, fmt.Errorf("truncated packet header")
+	}
+	for _, c := range data[:4] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return Packet{}, nil, fmt.Errorf("invalid packet header")
+		}
+	}
+	n, _ := strconv.ParseUint(string(data[:4]), 16, 16)
+	if n <= 2 {
+		return Packet{Control: int(n)}, data[4:], nil
+	}
+	if n < 4 || n > MaxPacketSize || int(n) > len(data) {
+		return Packet{}, nil, fmt.Errorf("invalid packet size")
+	}
+	return Packet{Control: -1, Data: data[4:n]}, data[n:], nil
+}
+
 func Decode(data []byte) ([]Packet, error) {
 	var result []Packet
 	for len(data) > 0 {
-		if len(data) < 4 {
-			return nil, fmt.Errorf("truncated packet header")
+		if len(result) >= MaxCommandPackets {
+			return nil, fmt.Errorf("too many packets")
 		}
-		for _, c := range data[:4] {
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
-				return nil, fmt.Errorf("invalid packet header")
-			}
+		p, rest, err := nextPacket(data)
+		if err != nil {
+			return nil, err
 		}
-		n, _ := strconv.ParseUint(string(data[:4]), 16, 16)
-		if n <= 2 {
-			result = append(result, Packet{Control: int(n)})
-			data = data[4:]
-			continue
-		}
-		if n < 4 || n > MaxPacketSize || int(n) > len(data) {
-			return nil, fmt.Errorf("invalid packet size")
-		}
-		result = append(result, Packet{Control: -1, Data: data[4:n]})
-		data = data[n:]
+		result = append(result, p)
+		data = rest
 	}
 	return result, nil
 }
@@ -78,14 +92,18 @@ func OID(s string) bool {
 }
 
 func ParseFetch(data []byte) (Fetch, error) {
-	packets, err := Decode(data)
-	if err != nil {
-		return Fetch{}, err
-	}
 	f := Fetch{Supported: true}
 	args := false
-	for i, p := range packets {
-		if p.Control == 0 && i == len(packets)-1 {
+	for count := 0; len(data) > 0; count++ {
+		if count >= MaxCommandPackets {
+			return f, fmt.Errorf("too many command packets")
+		}
+		p, rest, err := nextPacket(data)
+		if err != nil {
+			return f, err
+		}
+		data = rest
+		if p.Control == 0 && len(data) == 0 {
 			if !args {
 				f.Supported = false
 			}
@@ -121,13 +139,21 @@ func ParseFetch(data []byte) (Fetch, error) {
 			if !OID(value) {
 				f.Supported = false
 			}
-			f.Wants = append(f.Wants, value)
+			if len(f.Wants) < maxLocalWants {
+				f.Wants = append(f.Wants, value)
+			} else {
+				f.Supported = false
+			}
 		case strings.HasPrefix(line, "have "):
 			value := strings.TrimPrefix(line, "have ")
 			if !OID(value) {
 				f.Supported = false
 			}
-			f.Haves = append(f.Haves, value)
+			if len(f.Haves) < maxLocalHaves {
+				f.Haves = append(f.Haves, value)
+			} else {
+				f.Supported = false
+			}
 		case line == "include-tag":
 			f.IncludeTag = true
 		case line == "thin-pack", line == "ofs-delta", line == "no-progress", line == "done", line == "wait-for-done":
@@ -170,17 +196,18 @@ func RefName(name string) bool {
 }
 
 func ParseRefs(data []byte) (Snapshot, error) {
-	packets, err := Decode(data)
-	if err != nil {
-		return Snapshot{}, err
-	}
 	var s Snapshot
 	ended := false
 	names := make(map[string]bool)
-	for i, p := range packets {
+	for len(data) > 0 {
+		p, rest, err := nextPacket(data)
+		if err != nil {
+			return s, err
+		}
+		data = rest
 		if p.Control == 0 {
 			ended = true
-			if i != len(packets)-1 && !(i == len(packets)-2 && packets[i+1].Control == 2) {
+			if len(data) != 0 && !bytes.Equal(data, []byte("0002")) {
 				return s, fmt.Errorf("data after ref response")
 			}
 			break

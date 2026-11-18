@@ -3,8 +3,10 @@ mode: multi
 upstreams:
   gitlab:
     url: https://gitlab.com
+    credential_host: git-cdn-gitlab.example
   github:
     url: https://github.com
+    credential_host: git-cdn-github.example
 
 listen: 127.0.0.1:8080
 cache_dir: ~/.git-cdn/caches
@@ -15,6 +17,11 @@ max_request_bytes: 8388608
 max_refs_bytes: 16777216
 max_response_bytes: 1073741824
 max_concurrent_git: 4
+max_concurrent_requests: 16
+max_requests_per_second: 64
+max_temp_response_bytes: 4294967296
+write_idle_timeout: 30s
+request_timeout: 10m
 fetch_timeout: 2m
 git_timeout: 2m
 upstream_timeout: 30s

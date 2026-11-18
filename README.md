@@ -33,6 +33,8 @@ cache_dir: /data/git-cdn/caches
 
 Both the configuration path and `cache_dir` expand `~/` to the current user's home directory. Explicit relative paths resolve against the process's startup working directory. Changing a configuration file takes effect after restarting the service.
 
+Non-loopback HTTP listeners require TLS or `trusted_proxy_cidrs`. A trusted proxy must overwrite `X-Forwarded-Proto: https`; untrusted peers cannot bypass the check by supplying this header. Non-loopback upstreams require HTTPS. Use `allow_insecure_http: true` only on a controlled internal network.
+
 The listener defaults to `127.0.0.1:8080`. Run behind a TLS reverse proxy for the CDN domain, or configure both `tls_cert` and `tls_key` to serve HTTPS directly. A front proxy must forward `Git-Protocol` and the configured authentication headers and allow Git request and response bodies.
 
 ## Single-site and multi-site modes
@@ -58,14 +60,16 @@ mode: multi
 upstreams:
   gitlab:
     url: https://gitlab.com
+    credential_host: git-cdn-gitlab.example
   github:
     url: https://github.com
+    credential_host: git-cdn-github.example
 ```
 
 ```text
-https://git-cdn.example/gitlab/group/repo[.git]
+https://git-cdn-gitlab.example/gitlab/group/repo[.git]
     → https://gitlab.com/group/repo.git
-https://git-cdn.example/github/owner/repo[.git]
+https://git-cdn-github.example/github/owner/repo[.git]
     → https://github.com/owner/repo.git
 ```
 
@@ -87,11 +91,11 @@ Or configure URL rewriting:
 git config --global url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 ```
 
-In multi-site mode, use `/gitlab/group/repo.git` and the rewrite prefix `url."https://git-cdn.example/gitlab/".insteadOf`. Configure each upstream prefix separately.
+In multi-site mode, use `/gitlab/group/repo.git` and the rewrite prefix `url."https://git-cdn-gitlab.example/gitlab/".insteadOf`. Configure each upstream prefix separately.
 
 This rule also affects push. The CDN forwards receive-pack discovery and push requests to the upstream. Per-remote fetch/push URLs can instead route fetch through the CDN and push directly to the host; see the design document for their interaction with global rewriting.
 
-Your credential helper must provide credentials for the **CDN domain** that the selected upstream accepts. Credentials stored for the upstream host do not move automatically. Only `Authorization` is forwarded by default, supporting the upstream's Basic/PAT or Bearer authentication. Add Cookie or other required authentication headers explicitly to `auth_headers`. With multiple upstreams, select credentials by path; `credential.useHttpPath` can help. The proxy does not persist plaintext credentials or exchange CDN tokens for upstream identities.
+Your credential helper must provide credentials for the **CDN domain** that the selected upstream accepts. Credentials stored for the upstream host do not move automatically. Only `Authorization` is forwarded by default, supporting the upstream's Basic/PAT or Bearer authentication. Add Cookie or other required authentication headers explicitly to `auth_headers`. With two or more upstreams, distinct `credential_host` values are required by default. A credential-bearing request with the wrong Host returns 421 before contacting the origin. A shared domain requires explicit `allow_shared_credential_host: true`, `credential.useHttpPath`, and path-scoped credentials. Proxy identity headers such as `X-Forwarded-*` and `X-Remote-User` cannot be configured as client credentials. The proxy does not persist plaintext credentials or exchange CDN tokens for upstream identities.
 
 ## Request behavior
 
@@ -129,11 +133,16 @@ Local responses are written to a size-limited temporary file. After Git exits su
 | `max_refs_bytes` | 16 MiB | Internal ls-refs response limit |
 | `max_response_bytes` | 1 GiB | Local response spool limit; larger responses fall back |
 | `max_concurrent_git` | 4 | Native Git process concurrency |
+| `max_concurrent_requests` | 16 | Active Git requests, held through parsing, passthrough and response transfer |
+| `max_requests_per_second` | 64 | Instance-wide rate, with an initial burst of the same size |
+| `max_temp_response_bytes` | 4 GiB | Total bytes in unfinished local responses, released after file deletion |
+| `write_idle_timeout` | 30s | Deadline for each write/flush; progressing transfers refresh it |
+| `request_timeout` | 10m | Total Git request deadline, including input, origin access and transfer |
 | `fetch_timeout` | 2m | Deadline for each hydration operation |
 | `git_timeout` | 2m | Total local deadline, including queueing, validation, hydration, and packing |
 | `upstream_timeout` | 30s | Deadline for the live ref probe |
 
-The local path handles up to 64 wants, 128 haves, and 128 current tags for include-tag requests. Larger requests fall back. Gzip v2 requests are decoded for inspection and retain their original compressed body when forwarded. Other encodings are forwarded. Canonical redirects within the trusted upstream base path are rewritten to the CDN.
+Each v2 command accepts at most 4096 packets without materializing a packet array. The local path handles up to 64 wants, 128 haves, and 128 current tags for include-tag requests. Larger requests fall back. Gzip v2 requests are decoded for inspection and retain their original compressed body when forwarded. Other encodings are forwarded. Canonical redirects within the trusted upstream base path are rewritten to the CDN.
 
 Persistent repository caches use LRU eviction with a default 20 GiB budget. Access times survive restarts, and startup trims existing caches if the configured budget is smaller. Before publication, the server reserves room and removes the oldest idle repository/credential scopes. Active leases and waiting requests pin their scopes, so hydration, alternates, and packing cannot race with eviction. A repository larger than the budget, or a budget fully pinned by active requests, falls back upstream. Evicted repositories are fetched again on demand.
 
@@ -141,11 +150,13 @@ Persistent repository caches use LRU eviction with a default 20 GiB budget. Acce
 max_cache_bytes: 21474836480 # 20 GiB
 ```
 
-The budget counts regular-file lengths under managed `repos/` scopes, including Git metadata. It excludes directory/block overhead, the process lock and HMAC key, and `tmp/`. Each staging download is checked against the same limit before publication and every 200 ms while fetching; temporary writes can exceed it between checks. Response files still use `max_response_bytes`. Concurrent staging and response files therefore require additional disk space: this is a persistent-cache admission limit, not a filesystem quota on the entire cache directory. Background warming, per-object Git GC, and shared cache coordination across nodes are not implemented. The service owns its cache repositories; do not prune or delete objects while it is running.
+The budget counts regular-file lengths under managed `repos/` scopes, including Git metadata. It excludes directory/block overhead, the process lock and HMAC key, and `tmp/`. Each staging download is checked against the same limit before publication and every 200 ms while fetching; temporary writes can exceed it between checks. Response files use `max_response_bytes` per file and `max_temp_response_bytes` globally; reservations remain held until file deletion. Startup clears orphaned service temporary files under the directory lock. Concurrent staging and response files therefore require additional disk space: this is a persistent-cache admission limit, not a filesystem quota on the entire cache directory. Background warming, per-object Git GC, and shared cache coordination across nodes are not implemented. The service owns its cache repositories; do not prune or delete objects while it is running.
 
 Stable upstream repository IDs are not checked yet. Invalidate a path's old cache when the upstream deletes and recreates that repository. Local HTTP v2 acceleration requires upstream v2 support. Verify the selected host's protocol capabilities and credential behavior during deployment.
 
-`GET /healthz` returns health status. `GET /metrics` exports local, hydration, passthrough, and authorization-denial counters, plus cache bytes, limit, pending reservation bytes, entry count, evictions and evicted bytes. Logs omit authentication headers and upstream Git stderr.
+Git requests exceeding concurrency or rate limits return 503 with `Retry-After: 1` before input is read. Health and metrics do not consume Git request slots. See [HTTP security](docs/http-security.md) for transport requirements, credential host binding and configuration migration.
+
+`GET /healthz` returns health status. `GET /metrics` exports local, hydration, passthrough, and authorization-denial counters, plus cache bytes, limit, pending reservation bytes, entry count, evictions and evicted bytes. Metrics also report active requests, admission rejections and temporary response bytes. Logs omit authentication headers and upstream Git stderr.
 
 ## Validation
 
