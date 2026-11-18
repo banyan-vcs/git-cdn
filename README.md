@@ -1,0 +1,169 @@
+# Git CDN
+
+English | [简体中文](README.zh-CN.md)
+
+An HTTP Git caching proxy built with Go and native Git. Before serving a fetch locally, it checks the caller's access through upstream `ls-refs`, verifies the requested object graph, and fetches missing roots by exact OID.
+
+The CDN has its own domain, such as `git-cdn.example`. Clients connect to the CDN, which uses the request's upstream credentials to contact the configured Git host.
+
+HTTP smart protocol v2 is implemented. SSH remains a planned feature.
+
+## Run
+
+Requirements: Go 1.24.1+, native Git, and Linux or macOS. Git must support protocol v2 and `fetch --no-auto-maintenance`.
+
+```sh
+mkdir -p ~/.git-cdn
+cp config.example.yaml ~/.git-cdn/config.yaml
+go build -o bin/git-cdn ./cmd/git-cdn
+./bin/git-cdn
+```
+
+The default configuration is `~/.git-cdn/config.yaml`. The default cache directory is `~/.git-cdn/caches`. Override the configuration file with a command-line argument:
+
+```sh
+./bin/git-cdn -config ./config.yaml
+```
+
+Set another cache directory in YAML:
+
+```yaml
+cache_dir: /data/git-cdn/caches
+```
+
+Both the configuration path and `cache_dir` expand `~/` to the current user's home directory. Explicit relative paths resolve against the process's startup working directory. Changing a configuration file takes effect after restarting the service.
+
+The listener defaults to `127.0.0.1:8080`. Run behind a TLS reverse proxy for the CDN domain, or configure both `tls_cert` and `tls_key` to serve HTTPS directly. A front proxy must forward `Git-Protocol` and the configured authentication headers and allow Git request and response bodies.
+
+## Single-site and multi-site modes
+
+Use [config.example.yaml](config.example.yaml) for one upstream. Repository paths map directly to that host:
+
+```yaml
+mode: single
+upstream:
+  url: https://gitlab.com
+```
+
+```text
+https://git-cdn.example/group/repo
+https://git-cdn.example/group/repo.git
+    → https://gitlab.com/group/repo.git
+```
+
+For multiple upstreams, copy [config.multi.example.yaml](config.multi.example.yaml) to `~/.git-cdn/config.yaml`. The first path segment selects the host:
+
+```yaml
+mode: multi
+upstreams:
+  gitlab:
+    url: https://gitlab.com
+  github:
+    url: https://github.com
+```
+
+```text
+https://git-cdn.example/gitlab/group/repo[.git]
+    → https://gitlab.com/group/repo.git
+https://git-cdn.example/github/owner/repo[.git]
+    → https://github.com/owner/repo.git
+```
+
+When `mode` is omitted, `upstream` selects single-site mode and `upstreams` selects multi-site mode. A one-entry `upstreams` map still uses a site prefix. Mixing both fields, unknown fields, duplicate keys, and multiple YAML documents are rejected at startup.
+
+Both modes preserve path case and normalize URLs with or without `.git` to the same upstream path and cache identity. Upstream URLs may include a base path. Discovery, ls-refs, fetch, push, and standard `info/lfs` routes normalize the suffix before forwarding POST requests. Redirects retain the direct repository path in single-site mode and the site prefix in multi-site mode.
+
+## Client setup
+
+Clone through a single-site CDN:
+
+```sh
+git clone https://git-cdn.example/group/repo.git
+```
+
+Or configure URL rewriting:
+
+```sh
+git config --global url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
+```
+
+In multi-site mode, use `/gitlab/group/repo.git` and the rewrite prefix `url."https://git-cdn.example/gitlab/".insteadOf`. Configure each upstream prefix separately.
+
+This rule also affects push. The CDN forwards receive-pack discovery and push requests to the upstream. Per-remote fetch/push URLs can instead route fetch through the CDN and push directly to the host; see the design document for their interaction with global rewriting.
+
+Your credential helper must provide credentials for the **CDN domain** that the selected upstream accepts. Credentials stored for the upstream host do not move automatically. Only `Authorization` is forwarded by default, supporting the upstream's Basic/PAT or Bearer authentication. Add Cookie or other required authentication headers explicitly to `auth_headers`. With multiple upstreams, select credentials by path; `credential.useHttpPath` can help. The proxy does not persist plaintext credentials or exchange CDN tokens for upstream identities.
+
+## Request behavior
+
+| Request | Behavior |
+| --- | --- |
+| Discovery and ls-refs | Live upstream forwarding, preserving capabilities and refs |
+| HTTP v2 fetch for a fresh tip, tag, or peeled OID | Authorize, verify dependencies, hydrate exact roots if needed, then run local upload-pack |
+| Ordinary have negotiation | Haves must be ancestor commits of authorized wanted roots; otherwise forward upstream |
+| include-tag | Check current tag relationships, hydrate relevant tags, and use a request-specific ref view |
+| Shallow, filter, want-ref, other historical/blob/tree OIDs, unknown extensions, SHA-256, v0/v1 | Forward upstream |
+| Receive-pack, push, and Git LFS repository endpoints | Forward upstream without object caching |
+
+Every fetch selected for local execution issues its own ls-refs request, including direct POSTs without an earlier discovery request. Upstream 401/403/404 responses preserve status and authentication challenges. Login pages or invalid ref responses cannot authorize cached data.
+
+Object stores are isolated by **upstream URL, canonical repository identity, and credential HMAC**. The HMAC key lives in the cache directory; credentials remain in request memory and child-process environments. Repository operations are locked. Each cache directory can be owned by only one service process; multiple instances use separate directories.
+
+Objects are received and checked in a staging bare repository before pack/index files and GC roots are published. Dependency traversal detects missing blobs even when the wanted commit exists. Healthy cached roots participate in incremental negotiation through alternates. Cached refs are never used as the client's upstream ref view.
+
+Local responses are written to a size-limited temporary file. After Git exits successfully, the server sends Content-Length and cache status headers and streams that file. Generation failures, timeouts, and size overruns fall back before committing the response. This increases local time to first byte because generation must finish before transfer. A pack-objects output cache is not implemented yet.
+
+`X-GitCDN-Cache-Status` values: `HIT` means required objects were already complete, `MISS` means they were hydrated before local generation, and `BYPASS` means an upstream response. HIT refers to objects, not a reused response pack.
+
+## Configuration and limits
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `cache_dir` | `~/.git-cdn/caches` | Persistent objects, staging, response files, and the process lock |
+| `mode` | Inferred from upstream/upstreams | Direct paths for single; site-prefixed paths for multi |
+| `upstream` | Required for single | One fixed host with a `url` field |
+| `upstreams` | Required for multi | Site ID to upstream mapping |
+| `max_request_bytes` | 8 MiB | Compressed and decompressed v2 upload-pack POST limit |
+| `max_refs_bytes` | 16 MiB | Internal ls-refs response limit |
+| `max_response_bytes` | 1 GiB | Local response spool limit; larger responses fall back |
+| `max_concurrent_git` | 4 | Native Git process concurrency |
+| `fetch_timeout` | 2m | Deadline for each hydration operation |
+| `git_timeout` | 2m | Total local deadline, including queueing, validation, hydration, and packing |
+| `upstream_timeout` | 30s | Deadline for the live ref probe |
+
+The local path handles up to 64 wants, 128 haves, and 128 current tags for include-tag requests. Larger requests fall back. Gzip v2 requests are decoded for inspection and retain their original compressed body when forwarded. Other encodings are forwarded. Canonical redirects within the trusted upstream base path are rewritten to the CDN.
+
+Automatic GC/eviction, background warming, and shared cache coordination across nodes are not implemented. Hydrated roots are pinned, so storage grows. Monitor cache and temporary disk usage. `max_response_bytes` limits a local response, not total cache size or upstream hydration storage. The service owns its cache repositories; do not prune or delete objects while it is running.
+
+Stable upstream repository IDs are not checked yet. Invalidate a path's old cache when the upstream deletes and recreates that repository. Local HTTP v2 acceleration requires upstream v2 support. Verify the selected host's protocol capabilities and credential behavior during deployment.
+
+`GET /healthz` returns health status. `GET /metrics` exports local, hydration, passthrough, and authorization-denial counters. Logs omit authentication headers and upstream Git stderr.
+
+## Validation
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Integration tests run an authenticated native `git http-backend` and standard Git clients. They cover clone, incremental fetch, push, YAML validation, both modes and URL suffixes, cache reuse, per-site authorization, stale OID forwarding, missing blob/pack repair, concurrent misses, timeouts, response limits, gzip, and redirects. The tests have passed with Git 2.54.0 and 2.42.0, race detection, and vet.
+
+```sh
+go run ./scripts/live-repository --concurrency 6 --repository git/git
+```
+
+The script contacts GitHub, retains results and client repositories under `bin/live-tests/`, and stops its temporary services.
+
+The protocol parser also has a fuzz target:
+
+```sh
+go test ./internal/protocol -fuzz=FuzzParseFetch -fuzztime=10s -parallel=4
+```
+
+## Design and protocol evidence
+
+- [Design](docs/design.md): architecture, authorization boundaries, HTTP/SSH feasibility, cache consistency, and implementation stages (Chinese).
+- [Protocol probes](docs/protocol-probes.md): six local Git checks and their implications (Chinese).
+- [Probe script](scripts/protocol-probe/main.go): Go standard library and native Git; no network or personal credentials.
+
+SSH will require platform delegation, a configured user credential mapping, or explicit agent forwarding. See the design document.
