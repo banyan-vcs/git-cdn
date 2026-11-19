@@ -10,6 +10,14 @@ Git CDN 使用独立域名，例如 `git-cdn.example`；原始服务仍使用 `g
 
 ## 运行
 
+本地容器快速启动：
+
+```sh
+docker compose up -d --build --wait
+```
+
+HTTP 地址为 `http://127.0.0.1:8080/github/owner/repository.git` 或 `/gitlab/group/repository.git`。命名卷保留缓存和 SSH host identity。自定义配置、可选 SSH 和数据管理见 [Docker Compose](docs/docker.md)。
+
 需要 Go 1.26+、原生 Git，以及 Linux 或 macOS。需要 Git 2.37+，支持 protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。
 
 ```sh

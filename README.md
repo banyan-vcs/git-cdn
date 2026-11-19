@@ -10,6 +10,14 @@ HTTP smart protocol v2 and a configurable SSH password proxy are implemented. Se
 
 ## Run
 
+Local container quickstart:
+
+```sh
+docker compose up -d --build --wait
+```
+
+Use `http://127.0.0.1:8080/github/owner/repository.git` or `/gitlab/group/repository.git`. A named volume persists the cache and SSH host identity. See [Docker Compose](docs/docker.md) for custom configuration, optional SSH and state management.
+
 Requirements: Go 1.26+, native Git, and Linux or macOS. Git 2.37+ must support protocol v2, `fetch --no-auto-maintenance` and cruft packs.
 
 ```sh
