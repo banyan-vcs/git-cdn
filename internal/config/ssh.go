@@ -9,10 +9,16 @@ import (
 	"strings"
 )
 
+const (
+	SSHHostKeyStrict    = "strict"
+	SSHHostKeyAcceptNew = "accept-new"
+)
+
 type SSHUpstream struct {
 	Address          string `yaml:"address" json:"address"`
 	User             string `yaml:"user,omitempty" json:"user,omitempty"`
 	KnownHosts       string `yaml:"known_hosts" json:"known_hosts"`
+	HostKeyPolicy    string `yaml:"host_key_policy,omitempty" json:"host_key_policy,omitempty"`
 	PathPrefix       string `yaml:"path_prefix,omitempty" json:"path_prefix,omitempty"`
 	CacheIdentityURL string `yaml:"cache_identity_url,omitempty" json:"cache_identity_url,omitempty"`
 }
@@ -96,6 +102,12 @@ func (s *SSH) Validate() error {
 			return err
 		}
 		u.KnownHosts = known
+		if u.HostKeyPolicy == "" {
+			u.HostKeyPolicy = SSHHostKeyStrict
+		}
+		if u.HostKeyPolicy != SSHHostKeyStrict && u.HostKeyPolicy != SSHHostKeyAcceptNew {
+			return fmt.Errorf("ssh upstream host_key_policy must be strict or accept-new")
+		}
 		if u.PathPrefix != "" {
 			if err := ValidateRepositoryPath(u.PathPrefix); err != nil {
 				return fmt.Errorf("invalid ssh path_prefix: %w", err)

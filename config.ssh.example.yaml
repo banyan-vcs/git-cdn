@@ -14,8 +14,10 @@ ssh:
     address: git.example.com:22
     user: git
     known_hosts: ~/.git-cdn/known_hosts
+    # accept-new creates this file on first use; changed keys are still rejected.
+    host_key_policy: strict
     cache_identity_url: https://git.example.com
 
 # For multiple SSH origins, replace upstream with upstreams and mode: multi.
 # Clients select a site with git@cdn.example:site/owner/repository.git.
-# Each site configures its own address, user, known_hosts and optional prefix.
+# Each site configures its own address, user, known_hosts, policy and optional prefix.

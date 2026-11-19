@@ -44,6 +44,8 @@ Docker build args `GO_IMAGE` and `RUNTIME_IMAGE` select alternative base images.
 
 Configure a real password/token-capable origin in [docker/config.ssh.yaml](../docker/config.ssh.yaml). Ordinary key-only SSH services need a separate signing/delegation design; see [SSH requirements](ssh.md). Put verified origin keys in `docker/known_hosts`, or select another file through `GIT_CDN_KNOWN_HOSTS`. These public keys must be readable by the container user; `chmod 644 docker/known_hosts` is appropriate. A missing bind source is rejected rather than created as a directory.
 
+The supplied SSH override uses `host_key_policy: strict` and a read-only origin trust file. For `accept-new`, use a local copy of the SSH override that removes the `/etc/git-cdn/known_hosts` bind mount, and select a custom SSH YAML with `host_key_policy: accept-new` and `known_hosts: /var/lib/git-cdn/known_hosts`. The existing state volume provides the writable persistent directory. The service records the first observed origin key and rejects subsequent changes; see [first-use trust](ssh.md#automatic-first-use-host-key-enrollment).
+
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.ssh.yml up -d --build --wait
 docker compose exec -T git-cdn cat /var/lib/git-cdn/ssh_host_ed25519_key.pub

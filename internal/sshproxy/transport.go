@@ -23,7 +23,6 @@ import (
 type origin struct {
 	settings   config.SSHUpstream
 	user, repo string
-	hostKey    ssh.HostKeyCallback
 	git        *nativegit.Runner
 	maxPack    int64
 }
@@ -49,13 +48,21 @@ func (o *origin) open(ctx context.Context, password []byte, command, version str
 		case <-stop:
 		}
 	}()
-	conn.SetDeadline(time.Now().Add(15 * time.Second))
-	cc, chans, requests, err := ssh.NewClientConn(conn, o.settings.Address, &ssh.ClientConfig{User: o.user, Auth: []ssh.AuthMethod{ssh.Password(string(password))}, HostKeyCallback: o.hostKey, HostKeyAlgorithms: o.trustedAlgorithms(conn.RemoteAddr())})
+	deadline := time.Now().Add(15 * time.Second)
+	conn.SetDeadline(deadline)
+	handshakeCtx, handshakeCancel := context.WithDeadline(ctx, deadline)
+	callback := func(address string, remote net.Addr, key ssh.PublicKey) error {
+		if err := verifyHostKey(handshakeCtx, o.settings, address, remote, key); err != nil {
+			return fmt.Errorf("%w: %w", errHostKeyCheck, err)
+		}
+		return nil
+	}
+	cc, chans, requests, err := ssh.NewClientConn(conn, o.settings.Address, &ssh.ClientConfig{User: o.user, Auth: []ssh.AuthMethod{ssh.Password(string(password))}, HostKeyCallback: callback, HostKeyAlgorithms: o.trustedAlgorithms(conn.RemoteAddr())})
+	handshakeCancel()
 	if err != nil {
 		close(stop)
 		conn.Close()
-		var keyError *knownhosts.KeyError
-		if errors.As(err, &keyError) {
+		if errors.Is(err, errHostKeyCheck) {
 			return nil, fmt.Errorf("origin SSH host key check failed")
 		}
 		return nil, fmt.Errorf("origin SSH password authentication failed")
@@ -100,6 +107,11 @@ func (o *origin) open(ctx context.Context, password []byte, command, version str
 // Prefer algorithms already trusted for this destination, as OpenSSH does.
 // Otherwise a multi-key server could negotiate a different, unpinned key.
 func (o *origin) trustedAlgorithms(remote net.Addr) []string {
+	// Algorithm selection must never enroll a key from an unrelated host entry.
+	check, err := knownhosts.New(o.settings.KnownHosts)
+	if err != nil {
+		return nil
+	}
 	data, err := os.ReadFile(o.settings.KnownHosts)
 	if err != nil {
 		return nil
@@ -112,7 +124,7 @@ func (o *origin) trustedAlgorithms(remote net.Addr) []string {
 			break
 		}
 		data = rest
-		if o.hostKey(o.settings.Address, remote, key) != nil {
+		if check(o.settings.Address, remote, key) != nil {
 			continue
 		}
 		values := []string{key.Type()}
@@ -269,9 +281,10 @@ func makeOrigin(settings config.SSHUpstream, user, repo string, g *nativegit.Run
 	if settings.PathPrefix != "" {
 		repo = strings.Trim(settings.PathPrefix, "/") + "/" + repo
 	}
-	callback, err := knownhosts.New(filepath.Clean(settings.KnownHosts))
+	settings.KnownHosts = filepath.Clean(settings.KnownHosts)
+	_, err := loadHostKeys(settings.KnownHosts, settings.HostKeyPolicy == config.SSHHostKeyAcceptNew)
 	if err != nil {
 		return nil, fmt.Errorf("cannot load origin SSH known_hosts")
 	}
-	return &origin{settings: settings, user: user, repo: repo, hostKey: callback, git: g, maxPack: maxPack}, nil
+	return &origin{settings: settings, user: user, repo: repo, git: g, maxPack: maxPack}, nil
 }

@@ -56,9 +56,10 @@ type sshFixture struct {
 	server                           *Server
 	denied                           atomic.Bool
 	connections                      atomic.Int64
+	passwordAttempts                 atomic.Int64
 }
 
-func newSSHFixture(t *testing.T) *sshFixture {
+func newSSHFixture(t *testing.T, configure ...func(*config.Config)) *sshFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &sshFixture{work: filepath.Join(root, "work"), repo: filepath.Join(root, "origin.git")}
@@ -93,6 +94,7 @@ func newSSHFixture(t *testing.T) *sshFixture {
 				defer conn.Close()
 				defer func() { mu.Lock(); delete(connections, conn); mu.Unlock() }()
 				cfg := &ssh.ServerConfig{PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+					f.passwordAttempts.Add(1)
 					if f.denied.Load() || string(password) != "fixture-token" {
 						return nil, fmt.Errorf("denied")
 					}
@@ -153,6 +155,9 @@ func newSSHFixture(t *testing.T) *sshFixture {
 	require.NoError(t, os.WriteFile(originKnown, []byte(knownhosts.Line([]string{knownhosts.Normalize(listener.Addr().String())}, signer.PublicKey())+"\n"), 0600))
 	cdnSigner, key := hostKey(t, root, "cdn-key")
 	c := config.Config{CacheDir: filepath.Join(root, "cache"), Upstream: &config.Upstream{URL: "https://git.example.com"}, SSH: &config.SSH{HostKey: key, Upstream: &config.SSHUpstream{Address: listener.Addr().String(), KnownHosts: originKnown}}}
+	for _, change := range configure {
+		change(&c)
+	}
 	require.NoError(t, c.Validate())
 	backend, err := server.New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
@@ -337,4 +342,71 @@ func TestSSHPasswordFallbackWithPublicKeyConfigured(t *testing.T) {
 	local, _, hydrations := f.server.Stats()
 	require.EqualValues(t, 1, local)
 	require.EqualValues(t, 1, hydrations)
+}
+
+func TestSSHAcceptNewCloneAndChangedKeyRejection(t *testing.T) {
+	known := filepath.Join(t.TempDir(), "trust", "known_hosts")
+	f := newSSHFixture(t, func(c *config.Config) {
+		c.SSH.Upstream.KnownHosts = known
+		c.SSH.Upstream.HostKeyPolicy = config.SSHHostKeyAcceptNew
+	})
+	f.git(t, "", "clone", "--quiet", f.base, filepath.Join(t.TempDir(), "cold"))
+	data, err := os.ReadFile(known)
+	require.NoError(t, err)
+	require.Len(t, strings.Split(strings.TrimSpace(string(data)), "\n"), 1)
+	f.git(t, "", "clone", "--quiet", f.base, filepath.Join(t.TempDir(), "warm"))
+	after, err := os.ReadFile(known)
+	require.NoError(t, err)
+	require.Equal(t, data, after)
+	local, _, hydrations := f.server.Stats()
+	require.EqualValues(t, 2, local)
+	require.EqualValues(t, 1, hydrations)
+	other, _ := hostKey(t, t.TempDir(), "other")
+	wrong := []byte(knownhosts.Line([]string{knownhosts.Normalize(f.server.cfg.SSH.Upstream.Address)}, other.PublicKey()) + "\n")
+	require.NoError(t, os.WriteFile(known, wrong, 0600))
+	before := f.passwordAttempts.Load()
+	require.Contains(t, rejectedSSHUploadPack(t, f), "origin SSH host key check failed")
+	require.Equal(t, before, f.passwordAttempts.Load(), "password was submitted despite a changed host key")
+	after, err = os.ReadFile(known)
+	require.NoError(t, err)
+	require.Equal(t, wrong, after, "the changed host key was silently replaced")
+	local, _, hydrations = f.server.Stats()
+	require.EqualValues(t, 2, local)
+	require.EqualValues(t, 1, hydrations)
+}
+
+func TestSSHAcceptNewWriteFailureDoesNotSubmitPassword(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses read-only directory permissions")
+	}
+	dir := t.TempDir()
+	known := filepath.Join(dir, "known_hosts")
+	require.NoError(t, os.WriteFile(known, nil, 0600))
+	require.NoError(t, os.Chmod(dir, 0500))
+	defer os.Chmod(dir, 0700)
+	f := newSSHFixture(t, func(c *config.Config) {
+		c.SSH.Upstream.KnownHosts = known
+		c.SSH.Upstream.HostKeyPolicy = config.SSHHostKeyAcceptNew
+	})
+	require.Contains(t, rejectedSSHUploadPack(t, f), "origin SSH host key check failed")
+	require.Zero(t, f.passwordAttempts.Load(), "password was submitted before trust was persisted")
+	data, err := os.ReadFile(known)
+	require.NoError(t, err)
+	require.Empty(t, data)
+}
+
+func rejectedSSHUploadPack(t *testing.T, f *sshFixture) string {
+	t.Helper()
+	address, _, _ := strings.Cut(strings.TrimPrefix(f.base, "ssh://git@"), "/")
+	callback, err := knownhosts.New(f.known)
+	require.NoError(t, err)
+	client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{User: "git", Auth: []ssh.AuthMethod{ssh.Password("fixture-token")}, HostKeyCallback: callback, Timeout: 5 * time.Second})
+	require.NoError(t, err)
+	defer client.Close()
+	session, err := client.NewSession()
+	require.NoError(t, err)
+	defer session.Close()
+	output, err := session.CombinedOutput("git-upload-pack 'Group/Repo.git'")
+	require.Error(t, err)
+	return string(output)
 }

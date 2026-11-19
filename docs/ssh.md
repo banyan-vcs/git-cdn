@@ -13,7 +13,7 @@ mkdir -p ~/.git-cdn
 ssh-keygen -t ed25519 -N '' -f ~/.git-cdn/ssh_host_ed25519_key
 ```
 
-Store verified origin keys in `~/.git-cdn/known_hosts`. The proxy requires this file and rejects mismatches; collecting a key with `ssh-keyscan` alone does not verify its authenticity. Clients should also trust the CDN's host key. The proxy receives reusable credentials and must be trusted to handle them.
+By default, `ssh.upstream.host_key_policy: strict` requires verified origin keys in `~/.git-cdn/known_hosts` and rejects unknown or changed keys. Collecting a key with `ssh-keyscan` alone does not verify its authenticity. Clients should also trust the CDN's host key. The proxy receives reusable credentials and must be trusted to handle them.
 
 ```sh
 go build -o bin/git-cdn ./cmd/git-cdn
@@ -25,6 +25,25 @@ HTTP and SSH run together. `ssh.listen` defaults to loopback port 2222, `ssh.max
 Single mode uses a direct repository path. Multi mode has `ssh.upstreams.<site>` and a leading `site/` path component. `path_prefix` prepends a fixed origin path. Repository case and optional `.git` aliases are preserved and normalized. Both SCP-style and `ssh://` client URLs work; paths are validated and forwarded relative to the configured origin.
 
 `cache_identity_url` explicitly associates SSH with the equivalent HTTP origin URL. Set it only when the configured endpoints and paths represent the same repositories and Git read permission domain. Without this setting SSH objects are keyed by SSH address, upstream username and path, and still shared across password values.
+
+## Automatic first-use host-key enrollment
+
+Set `host_key_policy: accept-new` for an origin to record its first observed raw host key during an SSH connection:
+
+```yaml
+ssh:
+  upstream:
+    address: git.example.com:22
+    user: git
+    known_hosts: ~/.git-cdn/known_hosts
+    host_key_policy: accept-new
+```
+
+The configured path remains required, but its directory and file can be created automatically. The key is saved before password/token authentication. Failed writes reject the connection. Enrollment uses an atomic file replacement and a separate file lock to preserve existing entries during concurrent connections and processes. Each site in `ssh.upstreams` can select its own policy; the hostname and port identify the trusted endpoint.
+
+`accept-new` trusts the first endpoint observed, so that initial connection must be made over a trusted network. Known keys are checked on every connection. Changed or revoked keys and unusable trust files are rejected; an untrusted host certificate requires a verified CA instead of automatic enrollment. Legitimate key rotation requires independently verifying and updating the saved record. Deleting the file or losing its volume resets first-use trust.
+
+The file and its parent directory must be writable by the service user, since updates also create a lock and temporary file. Put automatic trust under persistent state, such as `/var/lib/git-cdn/known_hosts` in containers. A read-only file bind mount suits `strict`; it cannot be used for automatic updates. `StrictHostKeyChecking=no` in the caller's OpenSSH command only affects the client-to-CDN connection and does not configure this origin policy.
 
 ## Client credentials
 

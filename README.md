@@ -10,6 +10,8 @@ HTTP smart protocol v2 and a configurable SSH password proxy are implemented. Se
 
 SSH accepts passwords/tokens only. Clients using only public keys are rejected during authentication with a banner explaining the supported credentials.
 
+Origin host keys use strict verification by default. Optional `host_key_policy: accept-new` records first-use keys in a writable persistent `known_hosts` file and rejects changed keys.
+
 ## Run
 
 Local container quickstart:
