@@ -1,0 +1,25 @@
+# Replace the SSH origin with one that accepts reusable passwords/tokens.
+mode: multi
+upstreams:
+  github:
+    url: https://github.com
+  gitlab:
+    url: https://gitlab.com
+listen: 0.0.0.0:8080
+allow_insecure_http: true
+allow_shared_credential_host: true
+cache_dir: /var/lib/git-cdn/caches
+max_cache_bytes: 21474836480
+repack_pack_threshold: 32
+repack_timeout: 2m
+gc_interval: 24h
+gc_retention: 336h
+ssh:
+  listen: 0.0.0.0:2222
+  host_key: /var/lib/git-cdn/ssh_host_ed25519_key
+  allowed_users: [git]
+  mode: single
+  upstream:
+    address: git.example.com:22
+    user: git
+    known_hosts: /etc/git-cdn/known_hosts

@@ -1,0 +1,19 @@
+# Enable after configuring the password-capable origin and its verified keys:
+# docker compose -f docker-compose.yml -f docker-compose.ssh.yml up -d --build --wait
+services:
+  git-cdn:
+    ports:
+      - "127.0.0.1:${GIT_CDN_SSH_PORT:-2222}:2222"
+    volumes:
+      - type: bind
+        source: ${GIT_CDN_SSH_CONFIG:-./docker/config.ssh.yaml}
+        target: /etc/git-cdn/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GIT_CDN_KNOWN_HOSTS:-./docker/known_hosts}
+        target: /etc/git-cdn/known_hosts
+        read_only: true
+        bind:
+          create_host_path: false

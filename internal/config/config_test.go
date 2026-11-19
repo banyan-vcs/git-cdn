@@ -148,6 +148,8 @@ func TestExampleYAMLConfigurations(t *testing.T) {
 		{"../../config.example.yaml", ModeSingle},
 		{"../../config.multi.example.yaml", ModeMulti},
 		{"../../config.ssh.example.yaml", ModeSingle},
+		{"../../docker/config.yaml", ModeMulti},
+		{"../../docker/config.ssh.yaml", ModeMulti},
 	} {
 		c, err := Load(test.path)
 		require.NoError(t, err, "example %s: mode=%s error=%v", test.path, c.Mode, err)

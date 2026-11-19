@@ -4,3 +4,5 @@
 /config.yaml
 *.test
 coverage.out
+/docker/known_hosts
+/docker/config.local.yaml

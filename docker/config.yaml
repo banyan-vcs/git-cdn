@@ -1,0 +1,17 @@
+# Local Compose uses one loopback-bound host port for both sites.
+mode: multi
+upstreams:
+  github:
+    url: https://github.com
+  gitlab:
+    url: https://gitlab.com
+listen: 0.0.0.0:8080
+allow_insecure_http: true
+allow_shared_credential_host: true
+cache_dir: /var/lib/git-cdn/caches
+max_cache_bytes: 21474836480
+max_temp_response_bytes: 4294967296
+repack_pack_threshold: 32
+repack_timeout: 2m
+gc_interval: 24h
+gc_retention: 336h
