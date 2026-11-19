@@ -258,3 +258,83 @@ func TestSSHCommandValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Group/Repo.git", repo)
 }
+
+func TestSSHRejectsPublicKeyAuthenticationWithExplanation(t *testing.T) {
+	f := newSSHFixture(t)
+	signer, key := hostKey(t, t.TempDir(), "client-key")
+	address, _, _ := strings.Cut(strings.TrimPrefix(f.base, "ssh://git@"), "/")
+	callback, err := knownhosts.New(f.known)
+	require.NoError(t, err)
+
+	t.Run("Go client", func(t *testing.T) {
+		var banners []string
+		client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{
+			User:            "git",
+			Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+			HostKeyCallback: callback,
+			Timeout:         5 * time.Second,
+			BannerCallback: func(message string) error {
+				banners = append(banners, message)
+				return nil
+			},
+		})
+		if client != nil {
+			client.Close()
+		}
+		require.Error(t, err)
+		require.Equal(t, []string{passwordOnlyBanner}, banners)
+	})
+
+	t.Run("OpenSSH client", func(t *testing.T) {
+		host, port, err := net.SplitHostPort(address)
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "ssh", "-F", os.DevNull,
+			"-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+f.known,
+			"-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+			"-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no",
+			"-o", "KbdInteractiveAuthentication=no", "-o", "ConnectTimeout=5",
+			"-i", key, "-p", port, "git@"+host, "git-upload-pack 'Group/Repo.git'")
+		cmd.Env = nativegit.Environment(nil)
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, ctx.Err())
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+		require.Equal(t, 255, exit.ExitCode())
+		require.Contains(t, string(output), strings.TrimSpace(passwordOnlyBanner))
+		require.Contains(t, string(output), "Permission denied (password)")
+	})
+
+	require.Zero(t, f.connections.Load(), "public-key-only clients reached the origin")
+	local, forwarded, hydrations := f.server.Stats()
+	require.Zero(t, local)
+	require.Zero(t, forwarded)
+	require.Zero(t, hydrations)
+}
+
+func TestSSHPasswordFallbackWithPublicKeyConfigured(t *testing.T) {
+	f := newSSHFixture(t)
+	signer, _ := hostKey(t, t.TempDir(), "client-key")
+	address, _, _ := strings.Cut(strings.TrimPrefix(f.base, "ssh://git@"), "/")
+	callback, err := knownhosts.New(f.known)
+	require.NoError(t, err)
+	var banners []string
+	client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{
+		User:            "git",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer), ssh.Password("fixture-token")},
+		HostKeyCallback: callback,
+		Timeout:         5 * time.Second,
+		BannerCallback: func(message string) error {
+			banners = append(banners, message)
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	client.Close()
+	require.Equal(t, []string{passwordOnlyBanner}, banners)
+	f.git(t, "", "clone", "--quiet", f.base, filepath.Join(t.TempDir(), "clone"))
+	local, _, hydrations := f.server.Stats()
+	require.EqualValues(t, 1, local)
+	require.EqualValues(t, 1, hydrations)
+}

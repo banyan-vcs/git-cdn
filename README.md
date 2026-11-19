@@ -8,6 +8,8 @@ The CDN has its own domain, such as `git-cdn.example`. Clients connect to the CD
 
 HTTP smart protocol v2 and a configurable SSH password proxy are implemented. See [SSH setup and requirements](docs/ssh.md) and [config.ssh.example.yaml](config.ssh.example.yaml).
 
+SSH accepts passwords/tokens only. Clients using only public keys are rejected during authentication with a banner explaining the supported credentials.
+
 ## Run
 
 Local container quickstart:

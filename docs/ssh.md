@@ -28,6 +28,10 @@ Single mode uses a direct repository path. Multi mode has `ssh.upstreams.<site>`
 
 ## Client credentials
 
+The SSH server offers only `password` authentication and sends an authentication banner explaining that public-key authentication is unsupported. Clients configured to use only SSH keys are rejected during authentication, before any origin connection or cache access. Use a password/token accepted by the origin, or connect directly to the origin for public-key authentication.
+
+Clients that have both keys and a password can still authenticate with the password. The banner is sent once per connection, including successful password connections. SSH client libraries need a banner callback to display this message; OpenSSH displays it by default.
+
 For a token file, an optional native `sshpass` client can read the file without exposing the token in command arguments:
 
 ```sh

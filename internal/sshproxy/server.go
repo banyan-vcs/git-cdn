@@ -20,6 +20,9 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const passwordOnlyBanner = "Git CDN supports SSH password/token authentication only; public-key authentication is not supported.\n" +
+	"Use a password/token accepted by the origin, or connect directly to the origin to use SSH keys.\n"
+
 type Server struct {
 	cfg                          config.Config
 	backend                      *server.Server
@@ -107,19 +110,24 @@ func (s *Server) handle(conn net.Conn) {
 	idleTimeout, _ := time.ParseDuration(s.cfg.WriteIdleTimeout)
 	transport := &idleConn{Conn: conn, timeout: idleTimeout}
 	var password []byte
-	sshConfig := &ssh.ServerConfig{MaxAuthTries: 3, PasswordCallback: func(meta ssh.ConnMetadata, value []byte) (*ssh.Permissions, error) {
-		allowed := false
-		for _, name := range s.cfg.SSH.AllowedUsers {
-			if meta.User() == name {
-				allowed = true
+	// Leave PublicKeyCallback unset so only password authentication is offered.
+	sshConfig := &ssh.ServerConfig{
+		MaxAuthTries:   3,
+		BannerCallback: func(ssh.ConnMetadata) string { return passwordOnlyBanner },
+		PasswordCallback: func(meta ssh.ConnMetadata, value []byte) (*ssh.Permissions, error) {
+			allowed := false
+			for _, name := range s.cfg.SSH.AllowedUsers {
+				if meta.User() == name {
+					allowed = true
+				}
 			}
-		}
-		if !allowed || len(value) == 0 || len(value) > 8192 {
-			return nil, fmt.Errorf("unsupported SSH credentials")
-		}
-		password = append(password[:0], value...)
-		return &ssh.Permissions{}, nil
-	}}
+			if !allowed || len(value) == 0 || len(value) > 8192 {
+				return nil, fmt.Errorf("unsupported SSH credentials")
+			}
+			password = append(password[:0], value...)
+			return &ssh.Permissions{}, nil
+		},
+	}
 	sshConfig.AddHostKey(s.signer)
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	client, channels, requests, err := ssh.NewServerConn(transport, sshConfig)

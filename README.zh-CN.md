@@ -8,6 +8,8 @@ Git CDN 使用独立域名，例如 `git-cdn.example`；原始服务仍使用 `g
 
 已实现 HTTP smart protocol v2 和可配置 SSH 密码代理；配置及适用条件见 [SSH 说明](docs/ssh.md) 和 [样例](config.ssh.example.yaml)。
 
+SSH 仅接受密码/token 认证。仅使用公钥认证的客户端会在认证阶段被拒绝，并收到说明支持凭证类型的 banner。
+
 ## 运行
 
 本地容器快速启动：
