@@ -36,7 +36,7 @@ func (l *Lease) View(ctx context.Context, snapshot protocol.Snapshot, roots []st
 		}
 	}()
 	g := l.store.Git
-	if err := g.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", view); err != nil {
+	if err := g.InitBare(ctx, view); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(view, "objects", "info", "alternates"), []byte(filepath.Join(l.Dir, "objects")+"\n"), 0600); err != nil {
@@ -50,11 +50,11 @@ func (l *Lease) View(ctx context.Context, snapshot protocol.Snapshot, roots []st
 	for _, ref := range snapshot.Refs {
 		if ref.Name == "HEAD" {
 			if ref.Symref != "" {
-				if err := g.Run(ctx, view, nil, io.Discard, nil, "symbolic-ref", "HEAD", ref.Symref); err != nil {
+				if err := g.SetHead(ctx, view, "ref: "+ref.Symref+"\n"); err != nil {
 					return "", err
 				}
 			} else if allowed[ref.OID] {
-				if err := os.WriteFile(filepath.Join(view, "HEAD"), []byte(ref.OID+"\n"), 0600); err != nil {
+				if err := g.SetHead(ctx, view, ref.OID+"\n"); err != nil {
 					return "", err
 				}
 			}

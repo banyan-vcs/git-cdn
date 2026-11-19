@@ -152,28 +152,29 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	sort.Strings(names)
 	for _, name := range names {
 		fmt.Fprintf(&updates, "update %s %s\n", name, desired[name])
-		additional += int64(2 * (len(name) + len(desired[name]) + 2))
 	}
-	oldHead, err := os.ReadFile(filepath.Join(l.Dir, "HEAD"))
+	oldHead, err := l.store.Git.Head(ctx, l.Dir)
 	if err != nil {
 		return err
-	}
-	// packed-refs deletion may rewrite the complete file and its lock.
-	if info, err := os.Stat(filepath.Join(l.Dir, "packed-refs")); err == nil {
-		additional += info.Size()
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if string(oldHead) != head {
-		additional += int64(len(head))
 	}
 	retentionChanged := string(previousRetention) != string(retentionData)
 	if retentionChanged {
 		additional += int64(len(retentionData))
 	}
-	if updates.Len() == 0 && string(oldHead) == head && !retentionChanged {
+	if updates.Len() == 0 && oldHead == head && !retentionChanged {
 		l.entry.refsObservedAt = snapshot.ObservedAt
 		return nil
+	}
+	if updates.Len() > 0 || oldHead != head {
+		recordBytes := updates.Len()
+		if oldHead != head {
+			recordBytes += len(head)
+		}
+		budget, err := refUpdateBudget(l.Dir, recordBytes)
+		if err != nil {
+			return err
+		}
+		additional += budget
 	}
 	r, err := l.reserve(additional)
 	if err != nil {
@@ -192,11 +193,8 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 			return err
 		}
 	}
-	if string(oldHead) != head {
-		if err := os.WriteFile(filepath.Join(l.Dir, "HEAD.lock"), []byte(head), 0600); err != nil {
-			return err
-		}
-		if err := os.Rename(filepath.Join(l.Dir, "HEAD.lock"), filepath.Join(l.Dir, "HEAD")); err != nil {
+	if oldHead != head {
+		if err := l.store.Git.SetHead(ctx, l.Dir, head); err != nil {
 			return err
 		}
 	}

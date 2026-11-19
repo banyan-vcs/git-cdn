@@ -111,9 +111,14 @@ func (l *Lease) publish(ctx context.Context, stage string, roots []string, exist
 	}
 	var updates strings.Builder
 	for _, root := range roots {
-		// Reserve both a ref and its transient lock before running update-ref.
-		additional += int64(2 * (len(root) + 1))
 		fmt.Fprintf(&updates, "update refs/cache/roots/%s %s\n", root, root)
+	}
+	if updates.Len() > 0 {
+		budget, err := refUpdateBudget(l.Dir, updates.Len())
+		if err != nil {
+			return err
+		}
+		additional += budget
 	}
 	r, err := l.reserve(additional)
 	if err != nil {

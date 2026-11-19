@@ -43,6 +43,8 @@ func Environment(extra map[string]string) []string {
 		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull,
 		"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
 		"GIT_ATTR_NOSYSTEM": "1", "LANG": "C", "LC_ALL": "C", "NO_PROXY": "*",
+		// Internal ref transactions must not derive an email through hostname/DNS lookup.
+		"GIT_COMMITTER_NAME": "Git CDN", "GIT_COMMITTER_EMAIL": "git-cdn@example.invalid",
 	}
 	for k, v := range extra {
 		defaults[k] = v

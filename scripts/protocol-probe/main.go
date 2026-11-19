@@ -120,7 +120,7 @@ func probes() {
 	secret := commit(work, "secret.txt", "private data\n", "private commit")
 	runGit(work, "checkout", "-q", "main")
 	runGit("", "clone", "-q", "--bare", "--no-hardlinks", work, origin)
-	runGit("", "clone", "-q", "--bare", "--no-hardlinks", origin, cache)
+	runGit("", "clone", "-q", "--bare", "--ref-format=reftable", "--no-hardlinks", origin, cache)
 	runGit(origin, "update-ref", "-d", "refs/heads/secret")
 	refs := rpc(origin, request("ls-refs", "symrefs", "peel"))
 	check(refs.code == 0 && bytes.Contains(refs.out, []byte(visible)) && !bytes.Contains(refs.out, []byte(secret)), "unexpected upstream refs")

@@ -57,7 +57,7 @@ func (s *Store) migrateLegacy() error {
 func (s *Store) mergeLegacy(ctx context.Context, parent string, scopes []string) error {
 	repo := filepath.Join(parent, "repo.git")
 	if _, err := os.Stat(filepath.Join(repo, "HEAD")); os.IsNotExist(err) {
-		if err := s.Git.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", repo); err != nil {
+		if err := s.Git.InitBare(ctx, repo); err != nil {
 			return err
 		}
 	} else if err != nil {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -44,6 +45,12 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	git, err := nativegit.New(c.GitBinary, c.MaxConcurrentGit)
+	if err != nil {
+		return nil, err
+	}
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err = git.RequireReftable(checkCtx)
+	checkCancel()
 	if err != nil {
 		return nil, err
 	}

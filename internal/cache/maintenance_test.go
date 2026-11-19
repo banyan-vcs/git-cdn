@@ -28,7 +28,7 @@ func maintenanceGit(t *testing.T, g *nativegit.Runner, dir string, args ...strin
 	return strings.TrimSpace(string(output))
 }
 
-func populatedLease(t *testing.T, threshold int) (*Store, *Lease, []string) {
+func populatedLease(t *testing.T, threshold int, formats ...string) (*Store, *Lease, []string) {
 	t.Helper()
 	g, err := nativegit.New("git", 4)
 	require.NoError(t, err)
@@ -37,6 +37,10 @@ func populatedLease(t *testing.T, threshold int) (*Store, *Lease, []string) {
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 	l, err := s.Acquire(context.Background(), s.Key("origin/repository.git:sha1"))
 	require.NoError(t, err)
+	if len(formats) > 0 {
+		require.NoError(t, s.ensureScope(l.entry.key))
+		maintenanceGit(t, g, "", "init", "-q", "--bare", "--object-format=sha1", "--ref-format="+formats[0], l.Dir)
+	}
 	work := filepath.Join(t.TempDir(), "work")
 	maintenanceGit(t, g, "", "init", "-q", "--object-format=sha1", "--initial-branch=main", work)
 	var roots []string
@@ -151,6 +155,7 @@ func TestLegacyCredentialCachesMergeWithoutRefetch(t *testing.T) {
 	l, err := s.Acquire(context.Background(), identity)
 	require.NoError(t, err)
 	defer l.Release()
+	require.Equal(t, "reftable", maintenanceGit(t, g, l.Dir, "config", "--get", "extensions.refStorage"))
 	require.Equal(t, filepath.Join(root, "repos", identity, "repo.git"), l.Dir)
 	for _, oid := range roots {
 		hit, err := l.Ensure(context.Background(), "file:///unavailable", nil, []string{oid})

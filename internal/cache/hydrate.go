@@ -61,7 +61,7 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 		return false, err
 	}
 	defer os.RemoveAll(stage)
-	if err := g.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", stage); err != nil {
+	if err := g.InitBare(ctx, stage); err != nil {
 		return false, err
 	}
 	if !exists {

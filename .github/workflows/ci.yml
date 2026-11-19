@@ -78,6 +78,25 @@ jobs:
           go version
           git --version
 
+      - name: Ensure Git supports reftable
+        run: |
+          probe="${RUNNER_TEMP}/git-cdn-ref-format-probe"
+          if ! git init --quiet --bare --ref-format=reftable "$probe"; then
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              sudo add-apt-repository --yes ppa:git-core/ppa
+              sudo apt-get update
+              sudo apt-get install --yes git
+            else
+              brew install git
+              task_git_bin="$(brew --prefix git)/bin"
+              printf '%s\n' "$task_git_bin" >> "$GITHUB_PATH"
+              export PATH="$task_git_bin:$PATH"
+            fi
+            git init --quiet --bare --ref-format=reftable "$probe"
+          fi
+          git --version
+          rm -rf "$probe"
+
       - name: Download and verify modules
         run: |
           go mod download
