@@ -18,6 +18,33 @@ defaults:
     shell: bash
 
 jobs:
+  container:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate Compose configuration
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ssh.yml config --quiet
+      - name: Build image
+        run: docker compose -p git-cdn-ci build
+      - name: Start and inspect runtime
+        run: |
+          docker compose -p git-cdn-ci up -d --wait --wait-timeout 120
+          curl --fail http://127.0.0.1:8080/healthz
+          docker compose -p git-cdn-ci exec -T git-cdn git --version
+          docker compose -p git-cdn-ci exec -T git-cdn ssh-keygen -lf /var/lib/git-cdn/ssh_host_ed25519_key.pub
+      - name: Show logs and remove test stack
+        if: always()
+        run: |
+          docker compose -p git-cdn-ci logs
+          docker compose -p git-cdn-ci down -v
+
   test:
     name: Go ${{ matrix.go }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
