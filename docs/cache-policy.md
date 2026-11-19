@@ -10,6 +10,20 @@ LRU removes whole repositories. An evicted repository hydrates again on demand. 
 
 Full unfiltered fetches with no haves and `done` reconcile cached refs against the complete live snapshot. Available complete roots are pinned and mapped to `refs/cache/upstream/`; obsolete cached refs and old roots are removed. Unrequested branches are not downloaded. Unpinning removes a retention ref, not an individual pack. Source refs and current requested roots still govern every response.
 
+## Ref storage
+
+New object caches, hydration staging and client ref views use `git init --bare --ref-format=reftable`. Legacy credential-cache merging also creates a reftable target when no shared repository exists. Native Git 2.45+ is required, and startup probes this capability before opening the cache. Ref lookup and updates benefit from indexed storage and fewer loose files when repositories have many branches or tags. Upstream discovery and `ls-refs` continue to use live origin authorization.
+
+HEAD is read and written through native Git, since the on-disk `HEAD` in a reftable repository is a compatibility marker. Ref update admission reserves room for new records, table-stack compaction and backend metadata; existing files repositories retain their packed-refs rewrite allowance. Repack and GC copy the repository's current backend into private staging and preserve its format.
+
+Existing files-format caches stay usable without downloading their objects again. To convert one, stop all users of its cache directory, then use Git 2.46+:
+
+```sh
+git -C /path/to/cache/repos/REPOSITORY_HASH/repo.git refs migrate --ref-format=reftable
+```
+
+The service's newly created temporary repositories use reftable even when serving an existing files cache. Migration is optional; the service does not run it on existing shared caches automatically.
+
 ## Pack maintenance
 
 `repack_pack_threshold` defaults to 32 (minimum 2) and `repack_timeout` defaults to two minutes. A bounded background queue coalesces maintenance, and idle-only acquisition uses the existing repository gate. Active and waiting clients pin their repository. Maintenance also consumes the global native Git process limit.

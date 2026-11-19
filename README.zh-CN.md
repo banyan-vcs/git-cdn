@@ -22,7 +22,7 @@ docker compose up -d --build --wait
 
 HTTP 地址为 `http://127.0.0.1:8080/github/owner/repository.git` 或 `/gitlab/group/repository.git`。命名卷保留缓存和 SSH host identity。自定义配置、可选 SSH 和数据管理见 [Docker Compose](docs/docker.md)。
 
-需要 Go 1.26+、原生 Git，以及 Linux 或 macOS。需要 Git 2.37+，支持 protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。
+需要 Go 1.26+、原生 Git，以及 Linux 或 macOS。需要 Git 2.45+，支持 reftable、protocol v2、`fetch --no-auto-maintenance` 和 cruft pack。启动时会检查 reftable 支持，Git 无法创建该格式时会明确报错。
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -128,6 +128,8 @@ GitHub 的 Git 接口也会对不存在的仓库返回 401。若公开 owner API
 
 对象在 staging bare 仓库内获取并校验，再发布 pack/index 和 GC roots。完整性检查遍历依赖，包含“commit 存在但 blob 缺失”的情况；已验证健康的旧 roots 可参与增量获取协商。缓存 refs 不作为上游可见 refs 返回。
 
+新建缓存、对象补齐的临时仓库及请求专属引用视图默认使用 reftable，通过索引减少大量分支、标签读取和更新时的文件操作。已有 files 格式缓存继续复用已下载对象，不会自动转换；迁移方式见 [引用存储](docs/cache-policy.md#ref-storage)。客户端 `ls-refs` 仍请求原站，以保持实时权限和引用可见性。
+
 包含 wants、`done`、没有 haves 且未过滤的 v2 fetch，会根据完整实时 ls-refs 快照对齐缓存引用。它覆盖普通 clone 和空仓库 fetch；Git 协议没有独立的 clone 标记。已缓存且完整的 tips 写入 `refs/cache/upstream/`，过时名称和 roots 被移除，HEAD 随原站更新；不下载客户端未请求的分支。增量、shallow、filter 及仅协商请求不清理 refs。
 
 本地响应先写入有大小上限的临时文件，Git 成功退出后设置 Content-Length 和状态头，再传输给客户端。本地生成失败、超时或超限时，在发送响应前完整回源。这个实现优先保证回源边界，代价是本地响应的首字节要等待生成完成；尚未实现 pack-objects 输出缓存。
@@ -190,7 +192,7 @@ go vet ./...
 
 集成测试启动带认证的真实 `git http-backend`，使用标准 Git 客户端执行 clone、增量 fetch 和 push；同时验证 YAML 加载和校验、单站点/多站点的两种 URL 格式及缓存共享、各站点独立鉴权与缓存隔离、陈旧 OID 回源、缺失 blob/pack 恢复、并发 miss、超时/响应超限回源、gzip 和重定向。
 
-上述集成测试已分别在 Git 2.54.0 和 2.42.0 上通过，Go race 检查及 vet 通过。
+引用存储测试覆盖 reftable 初始化、逻辑 HEAD、files 缓存复用及引用更新的容量拒绝。Git 2.45 之前的版本无法运行当前默认的 reftable 模式。
 
 容量测试覆盖 LRU 顺序、重启恢复、降低上限、活动/排队租约保护、并发容量预留、超大仓库回源、淘汰后重新获取和 staging 增长取消。GitHub 状态测试覆盖 owner 确认不存在、可见性未知时保留鉴权，以及元数据服务失败。
 

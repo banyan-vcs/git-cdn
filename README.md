@@ -22,7 +22,7 @@ docker compose up -d --build --wait
 
 Use `http://127.0.0.1:8080/github/owner/repository.git` or `/gitlab/group/repository.git`. A named volume persists the cache and SSH host identity. See [Docker Compose](docs/docker.md) for custom configuration, optional SSH and state management.
 
-Requirements: Go 1.26+, native Git, and Linux or macOS. Git 2.37+ must support protocol v2, `fetch --no-auto-maintenance` and cruft packs.
+Requirements: Go 1.26+, native Git, and Linux or macOS. Git 2.45+ must support reftable, protocol v2, `fetch --no-auto-maintenance` and cruft packs. Startup checks reftable support and fails clearly if the installed Git cannot create that format.
 
 ```sh
 mkdir -p ~/.git-cdn
@@ -128,6 +128,8 @@ Object stores are shared by **upstream URL, canonical repository path and object
 
 Objects are received and checked in a staging bare repository before pack/index files and GC roots are published. Dependency traversal detects missing blobs even when the wanted commit exists. Healthy cached roots participate in incremental negotiation through alternates. Cached refs are never used as the client's upstream ref view.
 
+New caches, hydration repositories and request-specific views use reftable by default. Indexed ref storage reduces filesystem work when looking up or updating many branches and tags. Existing files-format caches remain reusable with their downloaded objects; they are not automatically converted. See [ref storage and migration](docs/cache-policy.md#ref-storage) for upgrading them. Client `ls-refs` still goes to the origin for current permissions and visibility.
+
 An unfiltered v2 fetch with wants, `done` and no haves reconciles stored refs against a complete live ls-refs snapshot. This includes ordinary clones and fetches into empty repositories; Git does not label clone operations on the wire. Complete cached tips are recorded under `refs/cache/upstream/`, obsolete names and root pins are removed, and HEAD is updated. Unrequested branches are not downloaded. Incremental, shallow, filtered and negotiation-only requests do not prune refs.
 
 Local responses are written to a size-limited temporary file. After Git exits successfully, the server sends Content-Length and cache status headers and streams that file. Generation failures, timeouts, and size overruns fall back before committing the response. This increases local time to first byte because generation must finish before transfer. A pack-objects output cache is not implemented yet.
@@ -188,7 +190,7 @@ go test -race ./...
 go vet ./...
 ```
 
-Integration tests run an authenticated native `git http-backend` and standard Git clients. They cover clone, incremental fetch, push, YAML validation, both modes and URL suffixes, cache reuse, per-site authorization, stale OID forwarding, missing blob/pack repair, concurrent misses, timeouts, response limits, gzip, and redirects. The tests have passed with Git 2.54.0 and 2.42.0, race detection, and vet.
+Integration tests run an authenticated native `git http-backend` and standard Git clients. They cover clone, incremental fetch, push, YAML validation, both modes and URL suffixes, cache reuse, per-site authorization, stale OID forwarding, missing blob/pack repair, concurrent misses, timeouts, response limits, gzip, and redirects. Ref-storage tests cover reftable initialization, logical HEAD, files-cache reuse and ref budget rejection. Git versions older than 2.45 cannot run the current reftable default.
 
 Cache policy tests cover LRU order, restart recovery, smaller startup budgets, active/waiting lease protection, concurrent capacity reservations, oversized fallback, refetch after eviction, and cancellation of growing staging data. GitHub response tests cover confirmed missing owners, preserved authentication for unknown visibility, and metadata failures.
 

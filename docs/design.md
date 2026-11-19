@@ -45,7 +45,7 @@ cache/
     repack-*/
 ```
 
-The cache is a bare object repository, not a complete branch mirror. `refs/cache/roots/<oid>` retain verified root histories. For a local fetch:
+New caches and request views are bare reftable repositories. Existing files-format caches remain supported. `refs/cache/roots/<oid>` retain verified root histories. For a local fetch:
 
 1. Acquire the shared repository lease.
 2. Traverse the wanted roots with `rev-list --objects --missing=error`; a present commit alone does not prove completeness.
