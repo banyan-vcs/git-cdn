@@ -42,6 +42,18 @@ GC expires grace pins in staging, validates the surviving object closure and pub
 
 The repository lease can end before a spool response finishes transmission because the response file is independent of cached objects. This permits client transfers to overlap without allowing eviction during pack generation.
 
+## Response pack cache
+
+Clone-shaped requests reuse their completed responses verbatim. Entries
+live under `repos/<identity>/packcache/`, keyed by the repository identity,
+the exact decoded request bytes and the live ref snapshot, so a new tip or
+tag produces a new key. A hit streams the stored file without consulting
+repository objects, hydration or upload-pack; the per-request upstream
+authorization probe is unchanged. Entry bytes count toward the scope size
+and the persistent budget, and per-scope retention is bounded by
+`max_pack_cache_bytes` (oldest first, oversized responses never stored).
+See [Configuration](configuration.md#response-pack-cache).
+
 ## Temporary storage
 
 The persistent budget excludes directory/block overhead, store infrastructure and `tmp/`. Each staging repository is checked against the same limit before publication and every 200 ms while fetching. Writes can temporarily exceed that check between samples. Local response files use `max_response_bytes` per file and a global `max_temp_response_bytes` budget (4 GiB by default). The global reservation remains held after Git process completion until file removal; exhausted generation falls back before committing local output. Startup clears orphaned service temporary files under the directory lock.

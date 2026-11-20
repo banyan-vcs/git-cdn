@@ -33,7 +33,10 @@ discovery 和客户端 ls-refs 始终发往原站。want 为当前广播 OID 的
 
 每个 fetch 响应都带 `X-GitCDN-Cache-Status`：`HIT`（所需对象已完整存在）、
 `MISS`（本次补齐后本地生成）、`BYPASS`（原站响应——HIT 针对对象，不是复用
-的 pack）。对象库按原站 URL、仓库路径和对象格式共享，不同用户和轮换后的
+的 pack）。相同的 clone 形状请求额外逐字复用已生成的响应
+（`X-GitCDN-Pack-Cache`，
+[docs/configuration.md](docs/configuration.md#response-pack-cache)）。
+对象库按原站 URL、仓库路径和对象格式共享，不同用户和轮换后的
 token 复用同一份对象。设计记录见
 [docs/design.md](docs/design.md)。
 

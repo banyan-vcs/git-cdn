@@ -82,6 +82,7 @@ site prefix in multi-site mode.
 | `max_concurrent_requests` | 16 | Active Git requests, held through parsing, passthrough and response transfer |
 | `max_requests_per_second` | 64 | Instance-wide rate, with an initial burst of the same size |
 | `max_temp_response_bytes` | 4 GiB | Total bytes in unfinished local responses, released after file deletion |
+| `max_pack_cache_bytes` | 1 GiB | Per-repository budget for verbatim response-pack reuse; `0` applies the default, a negative value disables it |
 | `write_idle_timeout` | 30s | Deadline for each write/flush; progressing transfers refresh it |
 | `request_timeout` | 10m | Total Git request deadline, including input, origin access and transfer |
 | `fetch_timeout` | 2m | Deadline for each hydration operation |
@@ -111,6 +112,24 @@ redirects within the trusted upstream base path are rewritten to the CDN.
 Git requests exceeding concurrency or rate limits return 503 with
 `Retry-After: 1` before input is read; health and metrics requests do not
 consume Git request slots.
+
+## Response pack cache
+
+Clone-shaped requests — v2 fetches with wants, `done` and no haves, the
+shape CI clone storms produce — additionally reuse the generated response
+verbatim. The entry key binds the repository identity, the exact decoded
+request bytes and the live ref snapshot: a new tip, a new tag or different
+capabilities produce a different key and a fresh generation. Requests with
+client haves never enter the cache. Reuse skips hydration, ref views and
+upload-pack entirely; the live upstream authorization probe still runs for
+every request. Entries are self-contained files under the repository scope
+(`repos/<hash>/packcache/`): they count toward the persistent cache budget,
+survive restarts, and disappear with whole-scope LRU eviction. Within a
+scope, `max_pack_cache_bytes` (1 GiB by default, per repository) evicts the
+oldest entries first; responses larger than the budget are never retained.
+`X-GitCDN-Pack-Cache: HIT|MISS` on local responses reports the outcome, and
+`gitcdn_pack_cache_hits_total` / `gitcdn_pack_cache_stores_total` are
+exported on `/metrics`.
 
 ## Transport and TLS
 

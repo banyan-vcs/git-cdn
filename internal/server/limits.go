@@ -71,12 +71,13 @@ func (b *responseBudget) bytes() int64 {
 }
 
 type responseFile struct {
-	file   *os.File
-	budget *responseBudget
-	limit  int64
-	bytes  int64
-	once   sync.Once
-	err    error
+	file    *os.File
+	budget  *responseBudget
+	limit   int64
+	bytes   int64
+	persist bool // cached packs are shared entries, not spool files
+	once    sync.Once
+	err     error
 }
 
 func (f *responseFile) Name() string               { return f.file.Name() }
@@ -99,10 +100,14 @@ func (f *responseFile) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Close holds the budget until the response file has been removed.
+// Close holds the budget until the response file has been removed. Files
+// served from the response pack cache are shared and stay on disk.
 func (f *responseFile) Close() error {
 	f.once.Do(func() {
 		f.err = f.file.Close()
+		if f.persist {
+			return
+		}
 		if err := os.Remove(f.Name()); err != nil && !os.IsNotExist(err) {
 			f.err = errors.Join(f.err, err)
 			return

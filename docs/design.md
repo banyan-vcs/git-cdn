@@ -76,7 +76,7 @@ Capacity accounting and eviction currently perform filesystem work under the sto
 
 Local upload-pack writes a bounded temporary response before the server commits headers. This preserves the ability to forward one complete upstream response after local generation failure. Generation and spool writes overlap, but client transfer starts only after success. Cold requests additionally complete upstream fetch/index/check/publication before local packing.
 
-This design increases time to first byte and file I/O. It also generates packs on every object-cache HIT. A future pack-objects cache can combine identical producers and reuse completed output; a streaming mode can reduce latency but must define errors after response commitment, when complete fallback is no longer possible.
+This design increases time to first byte and file I/O. Clone-shaped requests — wants, `done`, no haves — no longer regenerate on every object-cache HIT: their completed responses are reused verbatim from a per-repository pack cache keyed by the exact request bytes and the live ref snapshot, skipping hydration, ref views and upload-pack while the per-request authorization probe still runs (see [Configuration](configuration.md#response-pack-cache)). Requests carrying client haves still generate per request; a streaming mode can reduce their latency but must define errors after response commitment, when complete fallback is no longer possible.
 
 Measure request upload, authorization, lease queueing, dependency checks, hydration, publication, pack generation, spool I/O and client transfer separately. Correctness checks and one-off elapsed times are not throughput or latency baselines. The [testing guide](testing.md) describes workload selection and reproducibility.
 

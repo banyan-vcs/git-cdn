@@ -124,7 +124,9 @@ func TestUnsupportedRequestsAndPushAreProxied(t *testing.T) {
 
 func TestCorruptCacheRepairsFromOrigin(t *testing.T) {
 	f := newFixture(t)
-	s, h := newCDN(t, f, nil)
+	// The response pack cache would short-circuit identical requests; this
+	// test exercises object-store repair, so it runs with the pack cache off.
+	s, h := newCDN(t, f, func(c *config.Config) { c.MaxPackCacheBytes = -1 })
 	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil))
 	var removed int
 	err := filepath.WalkDir(filepath.Join(s.store.Root, "repos"), func(path string, entry os.DirEntry, err error) error {
@@ -212,7 +214,8 @@ func TestNoCredentialsInPersistentCache(t *testing.T) {
 
 func TestMissingBlobIsRepairedWhenCommitStillExists(t *testing.T) {
 	f := newFixture(t)
-	s, h := newCDN(t, f, nil)
+	// Runs with the response pack cache off; see TestCorruptCacheRepairsFromOrigin.
+	s, h := newCDN(t, f, func(c *config.Config) { c.MaxPackCacheBytes = -1 })
 	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil))
 	var repo string
 	var pack []byte

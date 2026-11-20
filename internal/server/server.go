@@ -38,6 +38,8 @@ type Server struct {
 	hydrated         atomic.Uint64
 	proxied          atomic.Uint64
 	authDenied       atomic.Uint64
+	packHits         atomic.Uint64
+	packStores       atomic.Uint64
 }
 
 func New(c config.Config, logger *slog.Logger) (*Server, error) {
@@ -61,6 +63,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	store.SetPackCacheBytes(c.MaxPackCacheBytes)
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	t.DisableCompression = true

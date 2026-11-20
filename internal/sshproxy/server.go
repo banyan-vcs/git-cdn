@@ -345,7 +345,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		if err != nil || !refs.Allows(fetch.Wants) {
 			return s.proxy(ch, origin, data, nil)
 		}
-		file, status, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
+		file, status, packHit, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
 			s.hydrations.Add(1)
 			return o.hydrate(ctx, password, stage, roots)
 		}))
@@ -353,7 +353,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 			return s.proxy(ch, origin, data, nil)
 		}
 		s.local.Add(1)
-		_ = status
+		_, _ = status, packHit
 		_, err = io.Copy(ch, file)
 		file.Close()
 		if err != nil {

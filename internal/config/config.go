@@ -24,6 +24,9 @@ const (
 	DefaultConfigPath          = "~/.git-cdn/config.yaml"
 	DefaultCacheDir            = "~/.git-cdn/caches"
 	DefaultMaxCacheBytes int64 = 20 << 30
+	// DefaultMaxPackCacheBytes bounds the verbatim response-pack cache per
+	// repository scope. A negative configured value disables the feature.
+	DefaultMaxPackCacheBytes int64 = 1 << 30
 )
 
 // ExpandHome resolves the current user's home prefix without expanding other users or variables.
@@ -69,6 +72,7 @@ type Config struct {
 	MaxConcurrentRequests     int                 `json:"max_concurrent_requests" yaml:"max_concurrent_requests"`
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
 	MaxTempResponseBytes      int64               `json:"max_temp_response_bytes" yaml:"max_temp_response_bytes"`
+	MaxPackCacheBytes         int64               `json:"max_pack_cache_bytes" yaml:"max_pack_cache_bytes"`
 	WriteIdleTimeout          string              `json:"write_idle_timeout" yaml:"write_idle_timeout"`
 	RequestTimeout            string              `json:"request_timeout" yaml:"request_timeout"`
 	AllowInsecureHTTP         bool                `json:"allow_insecure_http" yaml:"allow_insecure_http"`
@@ -213,6 +217,12 @@ func (c *Config) validateLimits() error {
 		if *limit.p < 1 {
 			return fmt.Errorf("byte limits must be positive")
 		}
+	}
+	if c.MaxPackCacheBytes == 0 {
+		c.MaxPackCacheBytes = DefaultMaxPackCacheBytes
+	}
+	if c.MaxPackCacheBytes < 0 {
+		c.MaxPackCacheBytes = 0
 	}
 	if c.MaxConcurrentGit == 0 {
 		c.MaxConcurrentGit = 4

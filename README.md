@@ -39,10 +39,12 @@ forwarded untouched.
 
 Every fetch response carries `X-GitCDN-Cache-Status`: `HIT` (required
 objects were already complete), `MISS` (hydrated this request) or `BYPASS`
-(an upstream response — HIT counts objects, not reused packs). Object
-stores are shared per upstream URL, repository path and object format;
-users and rotated tokens reuse the same objects. The design record:
-[docs/design.md](docs/design.md).
+(an upstream response — HIT counts objects, not reused packs). Identical
+clone-shaped requests additionally reuse the generated response verbatim
+(`X-GitCDN-Pack-Cache`, [docs/configuration.md](docs/configuration.md#response-pack-cache)).
+Object stores are shared per upstream URL, repository path and object
+format; users and rotated tokens reuse the same objects. The design
+record: [docs/design.md](docs/design.md).
 
 ## Quick start
 

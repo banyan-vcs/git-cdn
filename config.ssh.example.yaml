@@ -4,6 +4,7 @@ upstream:
   url: https://git.example.com
 listen: 127.0.0.1:8080
 cache_dir: ~/.git-cdn/caches
+max_pack_cache_bytes: 1073741824 # 1 GiB per repository; negative disables
 
 ssh:
   listen: 127.0.0.1:2222

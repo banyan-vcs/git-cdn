@@ -37,6 +37,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "gitcdn_repacks_total %d\ngitcdn_repack_failures_total %d\ngitcdn_repack_skipped_total %d\n", stats.Repacks, stats.RepackFailed, stats.RepackSkipped)
 		fmt.Fprintf(w, "gitcdn_gcs_total %d\ngitcdn_gc_failures_total %d\ngitcdn_gc_skipped_total %d\n", stats.GCs, stats.GCFailed, stats.GCSkipped)
 		fmt.Fprintf(w, "gitcdn_active_requests %d\ngitcdn_rejected_requests_total %d\ngitcdn_temp_response_bytes %d\ngitcdn_temp_response_max_bytes %d\n", s.requests.active(), s.rejected.Load(), s.responses.bytes(), s.config.MaxTempResponseBytes)
+		fmt.Fprintf(w, "gitcdn_pack_cache_hits_total %d\ngitcdn_pack_cache_stores_total %d\n", s.packHits.Load(), s.packStores.Load())
 		return
 	}
 	if !s.requests.acquire(time.Now()) {
@@ -116,7 +117,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.proxy(w, r, rt, "unadvertised-oid")
 		return
 	}
-	file, status, err := s.prepare(r, rt, fetch, snapshot, data)
+	file, status, packHit, err := s.prepare(r, rt, fetch, snapshot, data)
 	if err != nil {
 		if r.Context().Err() == nil {
 			s.proxy(w, r, rt, "local-unavailable")
@@ -132,6 +133,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-GitCDN-Cache-Status", status)
+	if s.store.PackCacheBytes() > 0 {
+		if packHit {
+			w.Header().Set("X-GitCDN-Pack-Cache", "HIT")
+		} else {
+			w.Header().Set("X-GitCDN-Pack-Cache", "MISS")
+		}
+	}
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	s.local.Add(1)
 	if _, err := io.Copy(w, file); err != nil {

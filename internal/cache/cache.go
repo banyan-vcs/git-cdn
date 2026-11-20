@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/nativegit"
@@ -24,6 +25,7 @@ type Store struct {
 	maxBytes      int64
 	usedBytes     int64
 	reservedBytes int64
+	packCache     atomic.Int64
 	evictions     uint64
 	evictedBytes  uint64
 	repack        RepackOptions
@@ -131,6 +133,18 @@ func (s *Store) Key(identity string) string {
 	identityHash := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(identityHash[:])
 }
+
+// SetPackCacheBytes configures the per-repository response-pack budget.
+// Zero disables response-pack caching; it must be set before serving.
+func (s *Store) SetPackCacheBytes(limit int64) {
+	if limit < 0 {
+		limit = 0
+	}
+	s.packCache.Store(limit)
+}
+
+// PackCacheBytes reports the configured per-repository response-pack budget.
+func (s *Store) PackCacheBytes() int64 { return s.packCache.Load() }
 
 type Lease struct {
 	Dir   string

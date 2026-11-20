@@ -24,6 +24,7 @@ max_concurrent_git: 4
 max_concurrent_requests: 16
 max_requests_per_second: 64
 max_temp_response_bytes: 4294967296
+max_pack_cache_bytes: 1073741824 # 1 GiB per repository; negative disables
 write_idle_timeout: 30s
 request_timeout: 10m
 fetch_timeout: 2m
