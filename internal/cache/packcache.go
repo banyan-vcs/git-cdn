@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // The response pack cache stores complete upload-pack responses verbatim,
@@ -22,20 +24,49 @@ func (l *Lease) packDir() string {
 	return filepath.Join(filepath.Dir(l.Dir), "packcache")
 }
 
+// Entries carry the published size in their name and a mismatch on lookup
+// (truncation, tampering) removes the entry and forces regeneration.
+func packName(key []byte, size int64) string {
+	return fmt.Sprintf("%x-%d", key, size)
+}
+
 // LookupPack opens a stored response for key. A nil file with a nil error
 // means the key is absent; the caller streams the file and closes it.
 func (l *Lease) LookupPack(key []byte) (*os.File, error) {
 	if l.store.PackCacheBytes() <= 0 || len(key) != 32 {
 		return nil, nil
 	}
-	file, err := os.Open(filepath.Join(l.packDir(), fmt.Sprintf("%x", key)))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+	dir := l.packDir()
+	prefix := fmt.Sprintf("%x-", key)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, nil // unreadable entries are treated as absent
 	}
-	return file, nil
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, ".staging") || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		size, err := strconv.ParseInt(strings.TrimPrefix(name, prefix), 10, 64)
+		if err != nil || size <= 0 {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.Size() != size {
+			_ = os.Remove(path)
+			return nil, nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, nil
+		}
+		return file, nil
+	}
+	return nil, nil
 }
 
 // StorePack publishes the spooled response at source under key and prunes
@@ -51,11 +82,7 @@ func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 	if err := ensureDirectory(dir); err != nil {
 		return false, err
 	}
-	target := filepath.Join(dir, fmt.Sprintf("%x", key))
-	if _, err := os.Lstat(target); err == nil {
-		return false, nil
-	}
-	staging := target + ".staging"
+	staging := filepath.Join(dir, fmt.Sprintf("%x", key)) + ".staging"
 	_ = os.Remove(staging)
 	if err := linkOrCopy(source, staging); err != nil {
 		return false, err
@@ -67,6 +94,11 @@ func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 	if info.Size() > limit {
 		_ = os.Remove(staging)
 		return false, nil // a response this large never fits the budget
+	}
+	target := filepath.Join(dir, packName(key, info.Size()))
+	if _, err := os.Lstat(target); err == nil {
+		_ = os.Remove(staging)
+		return false, nil
 	}
 	if err := os.Rename(staging, target); err != nil {
 		_ = os.Remove(staging)

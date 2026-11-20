@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -98,4 +100,25 @@ func TestPackCacheBudgetDropsOversizedResponses(t *testing.T) {
 	responseBody(t, r2)
 	require.EqualValues(t, "MISS", r2.Header.Get("X-GitCDN-Pack-Cache"), "oversized response stayed cached")
 	require.EqualValues(t, 0, s.packStores.Load())
+}
+
+func TestPackCacheRegeneratesTruncatedEntries(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	body := fetchBody(f.tip)
+	r1 := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
+	responseBody(t, r1)
+	require.EqualValues(t, 1, s.packStores.Load())
+	err := filepath.WalkDir(s.store.Root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.Contains(filepath.ToSlash(path), "/packcache/") {
+			return err
+		}
+		return os.Truncate(path, 16)
+	})
+	require.NoError(t, err)
+	r2 := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
+	b2 := responseBody(t, r2)
+	require.EqualValues(t, "MISS", r2.Header.Get("X-GitCDN-Pack-Cache"), "truncated entry was served")
+	require.EqualValues(t, "HIT", r2.Header.Get("X-GitCDN-Cache-Status"))
+	require.True(t, len(b2) > 16, "regenerated response is truncated")
 }
