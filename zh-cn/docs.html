@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>文档 — git-cdn</title>
-<meta name="description" content="git-cdn 文档集：设计、缓存策略、SSH 代理、HTTP 安全、Docker、协议实验与测试——主仓库中的七份文档。">
+<meta name="description" content="git-cdn 文档集：设计、缓存策略、SSH 代理、HTTP 安全、Docker、协议实验、配置与测试——主仓库中的八份文档。">
 <link rel="icon" href="../assets/avatar.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/style.css">
 <script src="../assets/lang.js"></script>
@@ -29,7 +29,7 @@
   <div class="wrap">
     <div class="section-head">
       <span class="kicker">文档</span>
-      <h2>七份文档，一个仓库</h2>
+      <h2>八份文档，一个仓库</h2>
       <p class="lede">设计记录与代码放在一起——下面每份文档都是主仓库
       <code>docs/</code> 下的一个文件。
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/README.md">英文 README</a>
@@ -39,6 +39,9 @@
       <div class="row"><div class="no">design</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">设计</a>
         <p>架构、鉴权边界、对象存储与补齐、容量与并发、响应交付及其权衡，附代码地图。</p></div></div>
+      <div class="row"><div class="no">config</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/configuration.md">配置参考</a>
+        <p>全部配置项及默认值、单/多站点模式、请求限额、传输与 TLS、客户端凭据绑定。</p></div></div>
       <div class="row"><div class="no">cache</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/cache-policy.md">缓存策略</a>
         <p>容量准入、LRU 与租约保护、引用存储与 reftable 迁移、pack 维护、不可达对象保留，以及 GitHub 不存在仓库的响应处理。</p></div></div>

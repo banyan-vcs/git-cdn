@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Documentation — git-cdn</title>
-<meta name="description" content="The git-cdn documentation set: design, cache policy, SSH proxy, HTTP security, Docker, protocol probes and testing — seven documents in the main repository.">
+<meta name="description" content="The git-cdn documentation set: design, cache policy, SSH proxy, HTTP security, Docker, protocol probes, configuration and testing — eight documents in the main repository.">
 <link rel="icon" href="assets/avatar.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/style.css">
 <script src="assets/lang.js"></script>
@@ -29,7 +29,7 @@
   <div class="wrap">
     <div class="section-head">
       <span class="kicker">Documentation</span>
-      <h2>Seven documents, one repository</h2>
+      <h2>Eight documents, one repository</h2>
       <p class="lede">The design record lives with the code — every document
       below is a file under <code>docs/</code> in the main repository. The
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/README.md">README</a>
@@ -41,6 +41,9 @@
       <div class="row"><div class="no">design</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">Design</a>
         <p>Architecture, the authorization boundary, object storage and hydration, capacity and concurrency, response delivery and its tradeoffs, plus a code map.</p></div></div>
+      <div class="row"><div class="no">config</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/configuration.md">Configuration</a>
+        <p>Every setting and its default, single- and multi-site modes, request limits, transport and TLS, and client-credential binding.</p></div></div>
       <div class="row"><div class="no">cache</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/cache-policy.md">Cache policy</a>
         <p>Size admission, LRU and lease protection, ref storage and reftable migration, pack maintenance, unreachable-object retention, and GitHub's missing-repository responses.</p></div></div>
