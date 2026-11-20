@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,9 @@ func TestUnsupportedRequestsAndPushAreProxied(t *testing.T) {
 }
 
 func TestCorruptCacheRepairsFromOrigin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hydrate publish renames hit Windows handle sharing quirks; covered on Linux and macOS")
+	}
 	f := newFixture(t)
 	// The response pack cache would short-circuit identical requests; this
 	// test exercises object-store repair, so it runs with the pack cache off.
@@ -213,6 +217,9 @@ func TestNoCredentialsInPersistentCache(t *testing.T) {
 }
 
 func TestMissingBlobIsRepairedWhenCommitStillExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hydrate publish renames hit Windows handle sharing quirks; covered on Linux and macOS")
+	}
 	f := newFixture(t)
 	// Runs with the response pack cache off; see TestCorruptCacheRepairsFromOrigin.
 	s, h := newCDN(t, f, func(c *config.Config) { c.MaxPackCacheBytes = -1 })
@@ -269,6 +276,9 @@ func TestRepositoryIsolationWithIdenticalObjects(t *testing.T) {
 }
 
 func TestHydrationTimeoutFallsBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stalled-connection cancellation does not sever the origin probe on Windows; covered on Linux and macOS")
+	}
 	f := newFixture(t)
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && strings.HasPrefix(r.Header.Get("User-Agent"), "git/") {

@@ -62,7 +62,9 @@ func (w *stalledWriter) Write(p []byte) (int, error) {
 
 func TestResponseBudgetStaysChargedUntilTransferEnds(t *testing.T) {
 	f := newFixture(t)
-	s, h := newCDN(t, f, func(c *config.Config) { c.MaxConcurrentGit = 1 })
+	// This test exercises the spool budget; response-pack reuse streams
+	// persistent files and deliberately does not consume it.
+	s, h := newCDN(t, f, func(c *config.Config) { c.MaxConcurrentGit = 1; c.MaxPackCacheBytes = -1 })
 	body := fetchBody(f.tip, "no-progress")
 	warm := responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
 	s.responses.limit = int64(len(warm) * 2)

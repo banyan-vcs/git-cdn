@@ -120,6 +120,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	file, status, packHit, err := s.prepare(r, rt, fetch, snapshot, data)
 	if err != nil {
 		if r.Context().Err() == nil {
+			s.logger.Debug("local response generation failed; falling back to upstream", "error", err)
 			s.proxy(w, r, rt, "local-unavailable")
 		}
 		return
