@@ -97,6 +97,21 @@ jobs:
           git --version
           rm -rf "$probe"
 
+      - name: Ensure Git LFS client is available
+        run: |
+          if ! command -v git-lfs >/dev/null; then
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              sudo apt-get update
+              sudo apt-get install --yes git-lfs
+            else
+              brew install git-lfs
+              task_lfs_bin="$(brew --prefix git-lfs)/bin"
+              printf '%s\n' "$task_lfs_bin" >> "$GITHUB_PATH"
+              export PATH="$task_lfs_bin:$PATH"
+            fi
+          fi
+          git lfs version
+
       - name: Download and verify modules
         run: |
           go mod download

@@ -184,26 +184,51 @@ func (s *Server) handle(conn net.Conn) {
 	sessions.Wait()
 }
 
-func parseCommand(command string) (string, string, error) {
+type gitCommand struct {
+	name, repo, operation string
+}
+
+func unquoteArgument(arg string) string {
+	if len(arg) >= 2 && (arg[0] == '\'' || arg[0] == '"') && arg[len(arg)-1] == arg[0] {
+		return arg[1 : len(arg)-1]
+	}
+	return arg
+}
+
+func parseCommand(command string) (gitCommand, error) {
+	var result gitCommand
+	if strings.ContainsAny(command, "\x00\r\n") {
+		return result, fmt.Errorf("invalid SSH command")
+	}
 	name, arg, ok := strings.Cut(command, " ")
 	if !ok {
-		return "", "", fmt.Errorf("missing Git repository")
-	}
-	if name != "git-upload-pack" && name != "git-receive-pack" {
-		return "", "", fmt.Errorf("unsupported SSH command")
+		return result, fmt.Errorf("missing Git repository")
 	}
 	arg = strings.TrimSpace(arg)
-	if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
-		arg = arg[1 : len(arg)-1]
+	switch name {
+	case "git-upload-pack", "git-receive-pack":
+	case "git-lfs-authenticate", "git-lfs-transfer":
+		boundary := strings.LastIndexByte(arg, ' ')
+		if boundary < 0 {
+			return result, fmt.Errorf("missing LFS operation")
+		}
+		result.operation = unquoteArgument(arg[boundary+1:])
+		if result.operation != "download" && result.operation != "upload" {
+			return result, fmt.Errorf("unsupported LFS operation")
+		}
+		arg = strings.TrimSpace(arg[:boundary])
+	default:
+		return result, fmt.Errorf("unsupported SSH command")
 	}
+	arg = unquoteArgument(arg)
 	// ssh:// URLs send one leading slash; forward a validated relative path to
 	// the fixed upstream rather than accepting an absolute filesystem path.
 	arg = strings.TrimPrefix(arg, "/")
 	if err := config.ValidateRepositoryPath(arg); err != nil {
-		return "", "", err
+		return result, err
 	}
-	arg = strings.TrimSuffix(arg, ".git") + ".git"
-	return name, arg, nil
+	result.name, result.repo = name, strings.TrimSuffix(arg, ".git")+".git"
+	return result, nil
 }
 
 func (s *Server) route(user, repo string) (*origin, error) {
@@ -242,12 +267,12 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 				request.Reply(false, nil)
 				return
 			}
-			command, repo, err := parseCommand(exec.Command)
+			command, err := parseCommand(exec.Command)
 			if err != nil {
 				request.Reply(false, nil)
 				return
 			}
-			o, err := s.route(user, repo)
+			o, err := s.route(user, command.repo)
 			if err != nil {
 				request.Reply(false, nil)
 				return
@@ -263,15 +288,16 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 	}
 }
 
-func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, password []byte, command, version string) uint32 {
+func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, password []byte, command gitCommand, version string) uint32 {
 	origin, err := o.open(ctx, password, command, version)
 	if err != nil {
 		io.WriteString(ch.Stderr(), err.Error()+"\n")
 		return 1
 	}
-	defer origin.close()
-	go io.Copy(ch.Stderr(), origin.err)
-	if command != "git-upload-pack" || !protocol.IsV2(version) {
+	stderrDone := make(chan struct{})
+	go func() { io.Copy(ch.Stderr(), origin.err); close(stderrDone) }()
+	defer func() { origin.close(); <-stderrDone }()
+	if command.name != "git-upload-pack" || !protocol.IsV2(version) {
 		return s.proxy(ch, origin, nil, nil)
 	}
 	advertisement, err := readMessage(origin.out, s.cfg.MaxRefsBytes)

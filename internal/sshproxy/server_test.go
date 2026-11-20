@@ -57,12 +57,17 @@ type sshFixture struct {
 	denied                           atomic.Bool
 	connections                      atomic.Int64
 	passwordAttempts                 atomic.Int64
+	lfs                              func(ssh.Channel, gitCommand) uint32
 }
 
 func newSSHFixture(t *testing.T, configure ...func(*config.Config)) *sshFixture {
+	return newSSHFixtureWithLFS(t, nil, configure...)
+}
+
+func newSSHFixtureWithLFS(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32, configure ...func(*config.Config)) *sshFixture {
 	t.Helper()
 	root := t.TempDir()
-	f := &sshFixture{work: filepath.Join(root, "work"), repo: filepath.Join(root, "origin.git")}
+	f := &sshFixture{work: filepath.Join(root, "work"), repo: filepath.Join(root, "origin.git"), lfs: lfs}
 	gitFixture(t, "", "init", "-q", "--initial-branch=main", f.work)
 	require.NoError(t, os.WriteFile(filepath.Join(f.work, "file"), []byte("initial\n"), 0600))
 	gitFixture(t, f.work, "add", "file")
@@ -130,18 +135,23 @@ func newSSHFixture(t *testing.T, configure ...func(*config.Config)) *sshFixture 
 						}
 						var message struct{ Command string }
 						ssh.Unmarshal(request.Payload, &message)
-						name, path, err := parseCommand(message.Command)
-						if err != nil || path != "Group/Repo.git" {
+						command, err := parseCommand(message.Command)
+						isLFS := command.name == "git-lfs-authenticate" || command.name == "git-lfs-transfer"
+						if err != nil || (isLFS && f.lfs == nil) || (!isLFS && command.repo != "Group/Repo.git") {
 							request.Reply(false, nil)
 							ch.Close()
 							break
 						}
 						request.Reply(true, nil)
 						go ssh.DiscardRequests(requests)
-						err = g.Run(ctx, "", ch, ch, map[string]string{"GIT_PROTOCOL": version}, strings.TrimPrefix(name, "git-"), f.repo)
 						status := uint32(0)
-						if err != nil {
-							status = 1
+						if isLFS {
+							status = f.lfs(ch, command)
+						} else {
+							err = g.Run(ctx, "", ch, ch, map[string]string{"GIT_PROTOCOL": version}, strings.TrimPrefix(command.name, "git-"), f.repo)
+							if err != nil {
+								status = 1
+							}
 						}
 						ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 						ch.Close()
@@ -256,12 +266,12 @@ func TestSSHShallowPassthroughAndRevocation(t *testing.T) {
 
 func TestSSHCommandValidation(t *testing.T) {
 	for _, command := range []string{"sh", "git-upload-pack '../repo'", "git-upload-pack 'repo; echo unsafe'", "git-upload-pack '/../../absolute'", "git-upload-pack 'Group/Repo' extra"} {
-		_, _, err := parseCommand(command)
+		_, err := parseCommand(command)
 		require.Error(t, err, command)
 	}
-	_, repo, err := parseCommand("git-upload-pack 'Group/Repo'")
+	command, err := parseCommand("git-upload-pack 'Group/Repo'")
 	require.NoError(t, err)
-	require.Equal(t, "Group/Repo.git", repo)
+	require.Equal(t, "Group/Repo.git", command.repo)
 }
 
 func TestSSHRejectsPublicKeyAuthenticationWithExplanation(t *testing.T) {

@@ -35,7 +35,7 @@ type originSession struct {
 	stop    chan struct{}
 }
 
-func (o *origin) open(ctx context.Context, password []byte, command, version string) (*originSession, error) {
+func (o *origin) open(ctx context.Context, password []byte, command gitCommand, version string) (*originSession, error) {
 	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", o.settings.Address)
 	if err != nil {
 		return nil, fmt.Errorf("origin SSH connection failed")
@@ -96,7 +96,11 @@ func (o *origin) open(ctx context.Context, password []byte, command, version str
 		client.Close()
 		return nil, err
 	}
-	if err := session.Start(command + " '" + o.repo + "'"); err != nil {
+	exec := command.name + " '" + o.repo + "'"
+	if command.operation != "" {
+		exec += " " + command.operation
+	}
+	if err := session.Start(exec); err != nil {
 		close(stop)
 		client.Close()
 		return nil, fmt.Errorf("origin Git command rejected")
@@ -141,10 +145,15 @@ func (o *origin) trustedAlgorithms(remote net.Addr) []string {
 	return algorithms
 }
 
-func (s *originSession) close() { close(s.stop); s.in.Close(); s.session.Close(); s.client.Close() }
+func (s *originSession) close() {
+	close(s.stop)
+	// The input-copy goroutine owns EOF; a second CloseWrite would race it.
+	s.session.Close()
+	s.client.Close()
+}
 
 func (o *origin) refs(ctx context.Context, password []byte, maxRefs int64) (protocol.Snapshot, error) {
-	s, err := o.open(ctx, password, "git-upload-pack", "version=2")
+	s, err := o.open(ctx, password, gitCommand{name: "git-upload-pack"}, "version=2")
 	if err != nil {
 		return protocol.Snapshot{}, err
 	}
@@ -170,7 +179,7 @@ func (o *origin) refs(ctx context.Context, password []byte, maxRefs int64) (prot
 func (o *origin) hydrate(ctx context.Context, password []byte, stage string, roots []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	s, err := o.open(ctx, password, "git-upload-pack", "version=2")
+	s, err := o.open(ctx, password, gitCommand{name: "git-upload-pack"}, "version=2")
 	if err != nil {
 		return err
 	}
@@ -280,6 +289,9 @@ func makeOrigin(settings config.SSHUpstream, user, repo string, g *nativegit.Run
 	}
 	if settings.PathPrefix != "" {
 		repo = strings.Trim(settings.PathPrefix, "/") + "/" + repo
+	}
+	if err := config.ValidateRepositoryPath(repo); err != nil {
+		return nil, err
 	}
 	settings.KnownHosts = filepath.Clean(settings.KnownHosts)
 	_, err := loadHostKeys(settings.KnownHosts, settings.HostKeyPolicy == config.SSHHostKeyAcceptNew)
