@@ -14,16 +14,16 @@ This is a project site: the content is served from the `gh-pages` branch of
 `banyan-vcs/git-cdn` at `https://banyan-vcs.github.io/git-cdn/` (the
 organization domain root belongs to the banyan site).
 
-1. In the `git-cdn` repository: Settings → Pages → Deploy from a branch →
-   `gh-pages` / root (once).
-2. From this directory, with the `git-cdn` remote available:
+The branch is live — GitHub auto-publishes a pushed `gh-pages` branch, no
+Settings change was needed. To update the site, edit here and:
 
-   ```sh
-   git init -b gh-pages .            # first time only
-   git remote add origin git@github.com:banyan-vcs/git-cdn.git
-   git add -A && git commit -m "site: publish"
-   git push origin gh-pages
-   ```
+```sh
+git add -A && git commit -m "site: ..."
+git push
+```
+
+If Pages ever needs manual wiring: in the `git-cdn` repository,
+Settings → Pages → Deploy from a branch → `gh-pages` / root.
 
 All asset and language links are relative, so the pages work under the
 `/git-cdn/` subpath, at a custom domain root, or from a local file preview.
