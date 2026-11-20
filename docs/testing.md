@@ -2,7 +2,7 @@
 
 ## Continuous integration
 
-[GitHub Actions](../.github/workflows/ci.yml) runs for pull requests, pushes to `main` and manual dispatches. It ensures Git can create reftable repositories, builds, vets, runs the Go suite with race detection and executes the native Git protocol probes on Linux and macOS using the version in `go.mod`. Linux also checks the latest stable Go release. The Linux job using `go.mod` checks formatting, verifies that module files are tidy and fuzzes the protocol parser for ten seconds.
+[GitHub Actions](../.github/workflows/ci.yml) runs for pull requests, pushes to `main` and manual dispatches. It ensures Git can create reftable repositories and installs the Git LFS client for SSH/LFS checkout and upload tests. It builds, vets, runs the Go suite with race detection and executes the native Git protocol probes on Linux and macOS using the version in `go.mod`. Linux also checks the latest stable Go release. The Linux job using `go.mod` checks formatting, verifies that module files are tidy and fuzzes the protocol parser for ten seconds.
 
 The suite includes the six-client offline live-harness matrix. Test origins run on loopback; public-repository live tests remain an explicit separate operation. CI downloads tools and Go modules, but Git test scenarios require no external repositories or credentials. Module/build caches are reused, and a newer run cancels an older run for the same pull request or branch.
 

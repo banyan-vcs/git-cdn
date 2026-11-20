@@ -10,6 +10,8 @@ Git CDN 使用独立域名，例如 `git-cdn.example`；原始服务仍使用 `g
 
 SSH 仅接受密码/token 认证。仅使用公钥认证的客户端会在认证阶段被拒绝，并收到说明支持凭证类型的 banner。
 
+SSH Git LFS 鉴权及传输命令支持受限的 download/upload 透传。保留原始 LFS endpoint 和对象签名 URL，LFS 数据由原站或其对象存储提供。
+
 上游 host key 默认严格校验。可选 `host_key_policy: accept-new` 会把首次连接观察到的公钥写入可写、持久化的 `known_hosts`，之后公钥发生变化时仍拒绝连接。
 
 ## 运行

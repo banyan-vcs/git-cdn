@@ -10,6 +10,8 @@ HTTP smart protocol v2 and a configurable SSH password proxy are implemented. Se
 
 SSH accepts passwords/tokens only. Clients using only public keys are rejected during authentication with a banner explaining the supported credentials.
 
+SSH Git LFS authentication and transfer commands support restricted download/upload passthrough. Original LFS endpoints and signed object URLs are preserved; LFS data stays on the origin or its object storage.
+
 Origin host keys use strict verification by default. Optional `host_key_policy: accept-new` records first-use keys in a writable persistent `known_hosts` file and rejects changed keys.
 
 ## Run

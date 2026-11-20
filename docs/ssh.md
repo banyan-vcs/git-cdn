@@ -62,7 +62,7 @@ SSH libraries can supply the password directly; neither the server nor the Go im
 
 ## Git behavior
 
-The frontend accepts Git upload-pack and receive-pack exec commands and the `GIT_PROTOCOL` environment request. Shell, PTY, arbitrary commands and forwarding channels are rejected. SSH transport acceptance is not repository authorization: the origin validates the password and selected repository operation before cache access. Invalid passwords, access denial and missing repositories never authorize local objects.
+The frontend accepts Git upload-pack and receive-pack commands, the LFS commands below, and the `GIT_PROTOCOL` environment request. Shell, PTY, arbitrary commands and forwarding channels are rejected. SSH transport acceptance is not repository authorization: the origin validates the password and selected repository operation before cache access. Invalid passwords, access denial and missing repositories never authorize local objects.
 
 V2 discovery and client ls-refs are relayed. A supported fetch with `done` can use local objects after a fresh, independent origin ls-refs query with the same password. Wanted roots, haves and tags use the existing local eligibility policy. Missing roots are fetched over a new SSH session and received with native `index-pack --fix-thin --strict`, then checked and published through the common cache. Native Git, HTTP, SSH and cache maintenance share the process budget and repository leases.
 
@@ -70,8 +70,16 @@ Completed local responses spool before commitment, preserving fallback after gen
 
 Shallow/filter/unknown extensions, unadvertised wants, unsupported haves, SHA-256, v0/v1 and push stay on the origin. Passthrough streams bidirectionally with stderr, EOF and exit status. Session framing is handled separately from the stateless HTTP frontend.
 
+## Git LFS
+
+`git-lfs-authenticate <repository> download|upload` and `git-lfs-transfer <repository> download|upload` are forwarded to the configured SSH origin using the caller's password/token. The operation is required; other operations, extra arguments and unsafe paths are rejected. Both commands use the same repository alias normalization, single/multi-origin routing and optional path prefix as Git commands. The final origin repository path is validated again after routing.
+
+Authentication responses pass through unchanged, including `href`, authorization headers, expiry and extension fields. Returned HTTPS endpoints and object-storage URLs can point outside the CDN. Clients access those URLs directly and need network access to them. The CDN does not mint LFS credentials or rewrite signed object URLs.
+
+Pure SSH LFS transfer uses bidirectional streaming with stdin EOF, stderr and the origin's exit status. The origin must implement `git-lfs-transfer`; hosts that provide only `git-lfs-authenticate` use the hybrid SSH authentication plus HTTP transfer flow. LFS sessions share the existing SSH connection/session limits and total request and write idle deadlines. They do not use local Git pack generation or the Git response spool budget, and LFS objects are not cached. Git packs contain the original LFS pointer blobs.
+
 ## Validation
 
-Go integration tests create a password-authenticated local SSH origin and use standard Git/OpenSSH clients. They cover clone, URL alias cache reuse, origin updates, new-root hydration, shallow passthrough, revocation and rejected exec paths. Tests require native Git and OpenSSH, but no external account or token issuer.
+Go integration tests create a password-authenticated local SSH origin and use standard Git/OpenSSH clients. They cover clone, URL alias cache reuse, origin updates, new-root hydration, shallow passthrough, revocation and rejected exec paths. LFS tests cover unchanged authentication JSON, binary passthrough, stderr/EOF/exit status, routing and rejected commands. With a native Git LFS client installed, an offline test verifies clone checkout, push upload and subsequent checkout using external HTTP object URLs. Tests use no external account or token issuer; CI installs the LFS client.
 
 Live origin validation is separate: obtain a credential accepted by the actual SSH endpoint, verify its host key, then compare direct access with clone/fetch through a temporary CDN. Keep actual domains, credentials and generated results in local deployment configuration or ignored artifacts.
