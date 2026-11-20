@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation — git-cdn</title>
+<meta name="description" content="The git-cdn documentation set: design, cache policy, SSH proxy, HTTP security, Docker, protocol probes and testing — seven documents in the main repository.">
+<link rel="icon" href="assets/avatar.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/lang.js"></script>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/avatar.svg" alt="">git-cdn</a>
+    <nav class="main">
+      <a href="./#why">Why</a>
+      <a href="./#how">How it works</a>
+      <a href="./#quickstart">Quick start</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+    </nav>
+    <span class="lang"><b>EN</b><a href="zh-cn/docs.html" lang="zh-CN" data-lang="zh">中文</a></span>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">Documentation</span>
+      <h2>Seven documents, one repository</h2>
+      <p class="lede">The design record lives with the code — every document
+      below is a file under <code>docs/</code> in the main repository. The
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/README.md">README</a>
+      and its
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/README.zh-CN.md">Chinese
+      sibling</a> are kept in parity.</p>
+    </div>
+    <div class="doclist">
+      <div class="row"><div class="no">design</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">Design</a>
+        <p>Architecture, the authorization boundary, object storage and hydration, capacity and concurrency, response delivery and its tradeoffs, plus a code map.</p></div></div>
+      <div class="row"><div class="no">cache</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/cache-policy.md">Cache policy</a>
+        <p>Size admission, LRU and lease protection, ref storage and reftable migration, pack maintenance, unreachable-object retention, and GitHub's missing-repository responses.</p></div></div>
+      <div class="row"><div class="no">ssh</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/ssh.md">SSH password proxy</a>
+        <p>Configure and run the SSH frontend, automatic first-use host-key enrollment, client credentials, Git behavior, and Git LFS passthrough.</p></div></div>
+      <div class="row"><div class="no">http</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/http-security.md">HTTP security</a>
+        <p>Admission and parsing limits, response spools and restart recovery, transport configuration, and multi-upstream credential binding.</p></div></div>
+      <div class="row"><div class="no">docker</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/docker.md">Docker Compose</a>
+        <p>The container quickstart: HTTP setup, configuration mounts, optional SSH, and state management with named volumes.</p></div></div>
+      <div class="row"><div class="no">probes</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/protocol-probes.md">Protocol probes</a>
+        <p>Local Git checks behind the design — reproducible experiments with the
+        <a href="https://github.com/banyan-vcs/git-cdn/blob/main/scripts/protocol-probe/main.go">probe script</a>, no network, no personal credentials.</p></div></div>
+      <div class="row"><div class="no">testing</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">Testing</a>
+        <p>The CI matrix, local correctness suites, optional real-repository validation, and the rules for performance measurement.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>
+      <a class="brand" href="./"><img src="assets/avatar.svg" alt="">git-cdn</a>
+      <p style="margin:8px 0 0;font-size:13px">MIT licensed · <a href="https://github.com/banyan-vcs/git-cdn/blob/main/LICENSE">license</a></p>
+    </div>
+    <nav>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+      <a href="./">Home</a>
+      <a href="zh-cn/docs.html" lang="zh-CN" data-lang="zh">中文</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

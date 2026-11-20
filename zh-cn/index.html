@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-cdn — HTTP Git 缓存代理</title>
+<meta name="description" content="git-cdn 是 HTTP Git 缓存代理：客户端保持原生 git，对象缓存在独立域名的共享对象库中，每次本地服务仍然用调用者自己的凭据在原站实时鉴权。">
+<meta property="og:title" content="git-cdn — HTTP Git 缓存代理">
+<meta property="og:description" content="对象进缓存，鉴权留原站。给 git 原站前面加一层缓存，客户端仍是原生 git。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://banyan-vcs.github.io/git-cdn/zh-cn/">
+<link rel="icon" href="../assets/avatar.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/lang.js"></script>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="../assets/avatar.svg" alt="">git-cdn</a>
+    <nav class="main">
+      <a href="#why">为什么</a>
+      <a href="#how">工作方式</a>
+      <a href="#features">能力</a>
+      <a href="#quickstart">快速开始</a>
+      <a href="docs.html">文档</a>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+    </nav>
+    <span class="lang"><a href="../" lang="en" data-lang="en">EN</a><b>中文</b></span>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="kicker">HTTP Git 缓存代理</span>
+      <h1>在客户端与原站之间，<br>加一层 git 缓存。</h1>
+      <p class="tagline">Objects cached. Authorization live.</p>
+      <p class="lede">
+        git-cdn 在自己的域名上提供 git smart HTTP v2——以及可选的 SSH
+        密码代理——背后是共享对象缓存。每次本地服务的 fetch 仍然用调用者
+        自己的凭据在原站实时鉴权；热缓存和冷缓存的校验完全一致。客户端
+        保持原生 git，变的只有 URL。
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#quickstart">快速开始</a>
+        <a class="btn ghost" href="https://github.com/banyan-vcs/git-cdn">源码在 GitHub</a>
+      </div>
+    </div>
+    <figure>
+      <svg viewBox="0 0 380 300" width="380" height="300" role="img"
+           aria-label="git 客户端经由 git-cdn 拉取，git-cdn 缓存对象，并为鉴权、补齐与透传联系原站">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+        <g font-family="ui-monospace, Consolas, monospace">
+          <!-- clients -->
+          <g>
+            <rect x="14" y="64" width="104" height="36" rx="8" fill="var(--card)" stroke="var(--line)"/>
+            <text x="66" y="87" text-anchor="middle" font-size="12" fill="var(--ink)">$ git clone</text>
+            <rect x="14" y="118" width="104" height="36" rx="8" fill="var(--card)" stroke="var(--line)"/>
+            <text x="66" y="141" text-anchor="middle" font-size="12" fill="var(--ink)">$ git fetch</text>
+            <text x="66" y="178" text-anchor="middle" font-size="11" fill="var(--ink-soft)">客户端 · v2 / SSH</text>
+          </g>
+          <!-- clients -> cdn -->
+          <line x1="122" y1="109" x2="148" y2="109" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arr)"/>
+          <!-- cdn -->
+          <g>
+            <rect x="152" y="52" width="116" height="158" rx="12" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="210" y="74" text-anchor="middle" font-size="13" font-weight="600" fill="var(--accent-ink)">git-cdn</text>
+            <rect x="166" y="92" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.9"/>
+            <rect x="166" y="111" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.55"/>
+            <rect x="166" y="130" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.3"/>
+            <text x="210" y="163" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">对象缓存</text>
+            <text x="210" y="177" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">LRU · repack · GC</text>
+            <!-- cache status chips -->
+            <g font-size="8.5" font-weight="600">
+              <rect x="158" y="186" width="26" height="16" rx="4" fill="none" stroke="var(--hit)"/>
+              <text x="171" y="198" text-anchor="middle" fill="var(--hit)">HIT</text>
+              <rect x="189" y="186" width="31" height="16" rx="4" fill="none" stroke="var(--flow)"/>
+              <text x="204.5" y="198" text-anchor="middle" fill="var(--flow)">MISS</text>
+              <rect x="225" y="186" width="40" height="16" rx="4" fill="none" stroke="var(--ink-soft)"/>
+              <text x="245" y="198" text-anchor="middle" fill="var(--ink-soft)">BYPASS</text>
+            </g>
+          </g>
+          <!-- cdn -> origin: authorize, hydrate, passthrough (see caption) -->
+          <line x1="272" y1="104" x2="288" y2="104" stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+          <!-- origin -->
+          <g>
+            <rect x="292" y="64" width="78" height="80" rx="10" fill="var(--card)" stroke="var(--line)"/>
+            <text x="331" y="90" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--ink)">原站</text>
+            <text x="331" y="108" text-anchor="middle" font-size="10" fill="var(--ink-soft)">github</text>
+            <text x="331" y="122" text-anchor="middle" font-size="10" fill="var(--ink-soft)">gitlab</text>
+            <text x="331" y="134" text-anchor="middle" font-size="10" fill="var(--ink-soft)">自建</text>
+          </g>
+        </g>
+      </svg>
+      <figcaption>客户端连接 CDN；CDN 连接原站——为每次 fetch 鉴权、为缺失
+      对象补齐、为一切不缓存的内容透传。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">为什么 git-cdn</span>
+      <h2>同样的仓库，被一遍又一遍地拉取。</h2>
+      <p class="lede">四个观察决定了它的设计。</p>
+    </div>
+    <div class="steps">
+      <div class="card"><h3>重复的拉取流量</h3>
+        <p>CI 集群、构建代理和开发者机器反复从同一个原站拉取同一批仓库。
+        中间加一层缓存后，这些字节只需经过原站一次，而不是每个客户端
+        各一次。</p></div>
+      <div class="card"><h3>鉴权必须保持实时</h3>
+        <p>复制对象的镜像也复制了访问控制的问题。git-cdn 对每个本地服务
+        的 fetch 都向原站做一次实时 <code>ls-refs</code>；缓存中的对象
+        永远不构成读取授权。</p></div>
+      <div class="card"><h3>客户端保持原生 git</h3>
+        <p>不需要插件，不需要代理变量。把克隆 URL 指向 CDN，或用
+        <code>url.insteadOf</code> 改写；凭据提供给 CDN 域名，由 CDN
+        转发给原站。</p></div>
+      <div class="card"><h3>里面是原生 Git，外面是 Go</h3>
+        <p>Git 自己做协商、对象接收和 pack 生成；Go 负责路由、缓存发布
+        和资源限制——这个分工及其权衡写在
+        <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">设计文档</a>里。</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">fetch 如何被服务</span>
+      <h2>鉴权、校验、补齐、服务。</h2>
+      <p class="lede">discovery 和客户端 <code>ls-refs</code> 始终发往原站。
+      want 为当前广播 OID 的 v2 fetch 可以在本地服务，分四步：</p>
+    </div>
+    <div class="steps" style="margin-bottom:34px">
+      <div class="card"><h3>鉴权</h3>
+        <p>用本次请求的凭据做一次新鲜的 <code>ls-refs</code>。原站
+        401/403/404 及其 challenge 原样透传；登录页不能授权缓存数据。</p></div>
+      <div class="card"><h3>校验</h3>
+        <p>依赖遍历证明 wanted roots 是完整的。commit 存在而 blob 缺失
+        仍然算 miss——检查的是对象图，不是 refs。</p></div>
+      <div class="card"><h3>补齐</h3>
+        <p>缺失的 roots 按精确 OID 拉入 staging，校验后连同 GC pins 一起
+        发布。已验证的旧 roots 通过 alternates 参与增量协商。</p></div>
+      <div class="card"><h3>服务</h3>
+        <p>请求专属的 refs 视图驱动本地 upload-pack。响应先落入有上限的
+        暂存文件，Git 成功退出后才传输——任何失败都回退为一次完整的
+        原站响应。</p></div>
+    </div>
+    <table class="matrix">
+      <thead><tr><th>请求</th><th>行为</th></tr></thead>
+      <tbody>
+        <tr><td>discovery · ls-refs</td><td>实时代理原站，保留协议能力和 refs</td></tr>
+        <tr><td>v2 fetch，want 是新鲜的 tip / tag / peeled OID</td><td>本地服务——上面的四步</td></tr>
+        <tr><td>have 协商</td><td>have 必须是已授权 roots 的祖先 commit；否则回源</td></tr>
+        <tr><td>shallow · filter · want-ref · 未知扩展 · SHA-256 · v0/v1</td><td>完整回源</td></tr>
+        <tr><td>push（receive-pack）· Git LFS 端点</td><td>完整回源，不缓存</td></tr>
+      </tbody>
+    </table>
+    <div class="statusline">
+      <div><b><span class="badge hit">HIT</span></b>
+        所需对象在缓存中已经完整</div>
+      <div><b><span class="badge miss">MISS</span></b>
+        本次请求补齐对象后本地生成</div>
+      <div><b><span class="badge bypass">BYPASS</span></b>
+        原站响应——HIT 针对对象，不是复用的 pack</div>
+    </div>
+    <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
+      这些行为由 19 个文件中的 101 个测试函数钉死，CI 带 race 检测运行，
+      用标准 Git 客户端驱动带认证的 <code>git http-backend</code>——
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>。</p>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">代理做什么</span>
+      <h2>可以无人值守运行的缓存。</h2>
+    </div>
+    <div class="grid">
+      <div class="card"><h3><span class="glyph">◫</span>共享对象库</h3>
+        <p>按原站 URL、仓库路径和对象格式共享，存放于
+        <code>repos/&lt;hash&gt;/repo.git</code>。不同用户和轮换后的
+        token 复用同一份对象；每次 fetch 仍用自己的凭据鉴权和补齐，
+        凭据只在请求内存中存活。</p></div>
+      <div class="card"><h3><span class="glyph">▤</span>是预算，不是配额</h3>
+        <p>仓库间默认 20&nbsp;GiB 的 LRU 预算。访问时间跨重启保留；活动
+        租约和排队请求保护其仓库；已淘汰的仓库可再次按需获取。</p></div>
+      <div class="card"><h3><span class="glyph">⚙</span>守规矩的后台维护</h3>
+        <p>空闲仓库做 geometric repack，cruft GC 的保留窗口最短 14 天。
+        失败保留原 pack；容量不足跳过维护，不影响客户端响应。</p></div>
+      <div class="card"><h3><span class="glyph">▦</span>原生 reftable</h3>
+        <p>新建缓存、补齐 staging 和请求专属视图都用 reftable（Git
+        2.45+）。已有 files 格式缓存继续可用；迁移是一行文档化的命令。</p></div>
+      <div class="card"><h3><span class="glyph">⟳</span>修复，而不是重建</h3>
+        <p>缺失的 blob 和 pack 由图遍历发现，按精确 OID 补齐。对象进入
+        staging、校验通过后发布——普通失败绝不删除整个缓存。</p></div>
+      <div class="card"><h3><span class="glyph">⇉</span>单站点与多站点</h3>
+        <p>一个上游用直接仓库路径，或用 <code>/site/…</code> 前缀在多个
+        主机间选择。默认要求每站点独立凭据域名；Host 不匹配的带凭据请求
+        直接 421，不回源。</p></div>
+      <div class="card"><h3><span class="glyph">⚿</span>SSH 密码代理</h3>
+        <p>可选前端终止 SSH，把相同的密码或 token 提交给原站。默认严格
+        host key 校验，可选 <code>accept-new</code> 首次登记；只带公钥的
+        客户端被拒绝并收到说明 banner。</p></div>
+      <div class="card"><h3><span class="glyph">⇅</span>LFS 透传</h3>
+        <p>Git LFS 鉴权和传输命令以受限的 download/upload 透传。保留原始
+        endpoint 和对象签名 URL——LFS 数据留在原站的存储上。</p></div>
+      <div class="card"><h3><span class="glyph">◍</span>默认可观测</h3>
+        <p><code>/healthz</code> 与 <code>/metrics</code>：本地、补齐、
+        透传、鉴权拒绝计数，缓存字节数、淘汰、活动请求数。日志不含凭据
+        和原站 Git stderr。</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">快速开始</span>
+      <h2>一条命令跑起来。</h2>
+    </div>
+    <div class="terminals">
+      <div>
+        <h3>Docker</h3>
+<pre><code>docker compose up -d --build --wait
+
+<span class="c"># 默认多站点（github + gitlab），仅绑定回环地址：</span>
+git clone http://127.0.0.1:8080/github/git/git.git
+
+<span class="c"># 第一次 clone 补齐缓存，第二次在本地服务；
+# 每个 fetch 响应都带：</span>
+<span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># 之后是 HIT</span></code></pre>
+      </div>
+      <div>
+        <h3>已有检出</h3>
+<pre><code><span class="c"># 全局改写 origin URL——原生 git，无需插件：</span>
+git config --global \
+  url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
+
+<span class="c"># 凭据提供给 CDN 域名，
+# 每次 fetch 由 CDN 转发给原站</span></code></pre>
+      </div>
+      <div>
+        <h3>从源码构建</h3>
+<pre><code>go build -o bin/git-cdn ./cmd/git-cdn
+cp config.example.yaml ~/.git-cdn/config.yaml
+./bin/git-cdn   <span class="c"># 监听 127.0.0.1:8080</span>
+
+<span class="c"># 需要 Go 1.26+ 和 Git 2.45+（reftable、
+# protocol v2、cruft pack）；Linux 或 macOS</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">架构</span>
+      <h2>一个代理，两条路径。</h2>
+      <p class="lede">可缓存的 v2 fetch 走"鉴权 / 校验 / 补齐 / 服务"流水
+      线，背后是持久对象库；其余请求——discovery、push、shallow 与
+      filter、LFS——原样转发给原站。</p>
+    </div>
+    <figure class="arch">
+      <img src="../assets/architecture.zh.svg" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch 送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、shallow、filter 与 LFS 请求透传给原站" loading="lazy">
+      <figcaption>完整的分层说明——鉴权边界、对象存储与补齐、容量与并发、
+      响应交付——见
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">docs/design.md</a>。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>
+      <a class="brand" href="./"><img src="../assets/avatar.svg" alt="">git-cdn</a>
+      <p style="margin:8px 0 0;font-size:13px">MIT 许可 · <a href="https://github.com/banyan-vcs/git-cdn/blob/main/LICENSE">license</a></p>
+    </div>
+    <nav>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+      <a href="docs.html">文档</a>
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">设计</a>
+      <a href="../" lang="en" data-lang="en">EN</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

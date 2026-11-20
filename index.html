@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-cdn — an HTTP Git caching proxy</title>
+<meta name="description" content="git-cdn is an HTTP Git caching proxy: plain git clients, a shared object cache on its own domain, and every locally served fetch still authorized live at the origin with the caller's credentials.">
+<meta property="og:title" content="git-cdn — an HTTP Git caching proxy">
+<meta property="og:description" content="Objects cached. Authorization live. A caching proxy in front of your git origin, for plain git clients.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://banyan-vcs.github.io/git-cdn/">
+<link rel="icon" href="assets/avatar.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/lang.js"></script>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="assets/avatar.svg" alt="">git-cdn</a>
+    <nav class="main">
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#quickstart">Quick start</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+    </nav>
+    <span class="lang"><b>EN</b><a href="zh-cn/" lang="zh-CN" data-lang="zh">中文</a></span>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="kicker">An HTTP Git caching proxy</span>
+      <h1>A cache between the clients<br>and the git origin.</h1>
+      <p class="tagline">对象进缓存，鉴权留原站。</p>
+      <p class="lede">
+        git-cdn serves git smart HTTP v2 — and an optional SSH password
+        proxy — from a shared object cache on its own domain. Every locally
+        served fetch is still authorized by the origin with the caller's own
+        credentials; a warm cache is checked exactly like a cold one.
+        Clients stay plain git. Only the URL changes.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#quickstart">Get started</a>
+        <a class="btn ghost" href="https://github.com/banyan-vcs/git-cdn">Source on GitHub</a>
+      </div>
+    </div>
+    <figure>
+      <svg viewBox="0 0 380 300" width="380" height="300" role="img"
+           aria-label="git clients fetch through git-cdn, which caches objects and contacts the origin for authorization, hydration and passthrough">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+        <g font-family="ui-monospace, Consolas, monospace">
+          <!-- clients -->
+          <g>
+            <rect x="14" y="64" width="104" height="36" rx="8" fill="var(--card)" stroke="var(--line)"/>
+            <text x="66" y="87" text-anchor="middle" font-size="12" fill="var(--ink)">$ git clone</text>
+            <rect x="14" y="118" width="104" height="36" rx="8" fill="var(--card)" stroke="var(--line)"/>
+            <text x="66" y="141" text-anchor="middle" font-size="12" fill="var(--ink)">$ git fetch</text>
+            <text x="66" y="178" text-anchor="middle" font-size="11" fill="var(--ink-soft)">clients · v2 / SSH</text>
+          </g>
+          <!-- clients -> cdn -->
+          <line x1="122" y1="109" x2="148" y2="109" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arr)"/>
+          <!-- cdn -->
+          <g>
+            <rect x="152" y="52" width="116" height="158" rx="12" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="210" y="74" text-anchor="middle" font-size="13" font-weight="600" fill="var(--accent-ink)">git-cdn</text>
+            <rect x="166" y="92" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.9"/>
+            <rect x="166" y="111" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.55"/>
+            <rect x="166" y="130" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.3"/>
+            <text x="210" y="163" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">object cache</text>
+            <text x="210" y="177" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">LRU · repack · GC</text>
+            <!-- cache status chips -->
+            <g font-size="8.5" font-weight="600">
+              <rect x="158" y="186" width="26" height="16" rx="4" fill="none" stroke="var(--hit)"/>
+              <text x="171" y="198" text-anchor="middle" fill="var(--hit)">HIT</text>
+              <rect x="189" y="186" width="31" height="16" rx="4" fill="none" stroke="var(--flow)"/>
+              <text x="204.5" y="198" text-anchor="middle" fill="var(--flow)">MISS</text>
+              <rect x="225" y="186" width="40" height="16" rx="4" fill="none" stroke="var(--ink-soft)"/>
+              <text x="245" y="198" text-anchor="middle" fill="var(--ink-soft)">BYPASS</text>
+            </g>
+          </g>
+          <!-- cdn -> origin: authorize, hydrate, passthrough (see caption) -->
+          <line x1="272" y1="104" x2="288" y2="104" stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+          <!-- origin -->
+          <g>
+            <rect x="292" y="64" width="78" height="80" rx="10" fill="var(--card)" stroke="var(--line)"/>
+            <text x="331" y="90" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--ink)">origin</text>
+            <text x="331" y="108" text-anchor="middle" font-size="10" fill="var(--ink-soft)">github</text>
+            <text x="331" y="122" text-anchor="middle" font-size="10" fill="var(--ink-soft)">gitlab</text>
+            <text x="331" y="134" text-anchor="middle" font-size="10" fill="var(--ink-soft)">self-hosted</text>
+          </g>
+        </g>
+      </svg>
+      <figcaption>Clients talk to the CDN; the CDN talks to the origin —
+      for authorization on every fetch, for missing objects, and for
+      everything that is not cached.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">Why git-cdn</span>
+      <h2>The same repositories, fetched again and again.</h2>
+      <p class="lede">Four observations shape the design.</p>
+    </div>
+    <div class="steps">
+      <div class="card"><h3>Repeated fetch traffic</h3>
+        <p>CI fleets, build agents and developer machines pull the same
+        repositories from one origin, over and over. A cache in between
+        moves those bytes once per cache instead of once per client.</p></div>
+      <div class="card"><h3>Authorization must stay live</h3>
+        <p>A mirror that copies objects also copies the access-control
+        question. git-cdn probes the origin with a live
+        <code>ls-refs</code> for every locally served fetch; objects in the
+        cache never authorize a read.</p></div>
+      <div class="card"><h3>Clients stay plain git</h3>
+        <p>No plugins, no proxy variables. Point the clone URL at the CDN or
+        rewrite with <code>url.insteadOf</code>; credentials are provided
+        for the CDN domain and forwarded to the origin.</p></div>
+      <div class="card"><h3>Native Git inside, Go around it</h3>
+        <p>Git itself negotiates, receives objects and generates packs;
+        Go routes requests, publishes the cache and enforces resource
+        limits — the split and its tradeoffs are written down in the
+        <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">design document</a>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">How a fetch is served</span>
+      <h2>Authorize, verify, hydrate, serve.</h2>
+      <p class="lede">Discovery and client <code>ls-refs</code> always go to
+      the origin. A v2 fetch whose wants are currently advertised OIDs can
+      be served locally, in four steps:</p>
+    </div>
+    <div class="steps" style="margin-bottom:34px">
+      <div class="card"><h3>Authorize</h3>
+        <p>A fresh <code>ls-refs</code> with this request's credentials.
+        Upstream 401/403/404 responses and their challenges pass through
+        unchanged; a login page cannot authorize cached data.</p></div>
+      <div class="card"><h3>Verify</h3>
+        <p>Dependency traversal proves the wanted roots are complete. A
+        present commit with a missing blob is a miss — the check is on the
+        graph, not on refs.</p></div>
+      <div class="card"><h3>Hydrate</h3>
+        <p>Missing roots are fetched by exact OID into staging, validated,
+        then published with GC pins. Verified existing roots join
+        incremental negotiation through alternates.</p></div>
+      <div class="card"><h3>Serve</h3>
+        <p>A request-specific ref view feeds local upload-pack. The response
+        spools to a bounded file and streams after Git exits — so any
+        failure falls back to one complete upstream response.</p></div>
+    </div>
+    <table class="matrix">
+      <thead><tr><th>Request</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><td>discovery · ls-refs</td><td>live upstream forwarding, capabilities and refs preserved</td></tr>
+        <tr><td>v2 fetch, wants are fresh tip / tag / peeled OIDs</td><td>served locally — the four steps above</td></tr>
+        <tr><td>have negotiation</td><td>haves must be ancestor commits of authorized roots; otherwise upstream</td></tr>
+        <tr><td>shallow · filter · want-ref · unknown extensions · SHA-256 · v0/v1</td><td>forwarded upstream</td></tr>
+        <tr><td>push (receive-pack) · Git LFS endpoints</td><td>forwarded upstream, uncached</td></tr>
+      </tbody>
+    </table>
+    <div class="statusline">
+      <div><b><span class="badge hit">HIT</span></b>
+        required objects were already complete in the cache</div>
+      <div><b><span class="badge miss">MISS</span></b>
+        objects were hydrated this request, then served locally</div>
+      <div><b><span class="badge bypass">BYPASS</span></b>
+        an upstream response — HIT counts objects, not reused packs</div>
+    </div>
+    <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
+      The behavior is pinned by 101 test functions across 19 files,
+      race-enabled in CI, driving an authenticated
+      <code>git http-backend</code> with standard Git clients —
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>.</p>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">What the proxy does</span>
+      <h2>A cache you can run unattended.</h2>
+    </div>
+    <div class="grid">
+      <div class="card"><h3><span class="glyph">◫</span>Shared object store</h3>
+        <p>One store per upstream URL, repository path and object format, at
+        <code>repos/&lt;hash&gt;/repo.git</code>. Different users and rotated
+        tokens reuse the same objects; every fetch still authorizes and
+        hydrates with its own credentials, kept in request memory only.</p></div>
+      <div class="card"><h3><span class="glyph">▤</span>A budget, not a quota</h3>
+        <p>A 20&nbsp;GiB default LRU budget across repositories. Access
+        times survive restarts; active leases and queued requests pin their
+        repositories; evicted repositories hydrate again on demand.</p></div>
+      <div class="card"><h3><span class="glyph">⚙</span>Maintenance that behaves</h3>
+        <p>Geometric repack on idle repositories, cruft GC with a 14-day
+        minimum retention window. Failures keep the existing packs;
+        capacity shortage skips maintenance without failing clients.</p></div>
+      <div class="card"><h3><span class="glyph">▦</span>reftable-native</h3>
+        <p>New caches, hydration staging and per-request views use reftable
+        (Git 2.45+). Existing files-format caches keep working; conversion
+        is a documented one-liner.</p></div>
+      <div class="card"><h3><span class="glyph">⟳</span>Repair, not reclone</h3>
+        <p>Missing blobs and packs are detected by graph traversal and
+        fetched by exact OID. Objects land in staging, are validated, then
+        published — ordinary failures never delete the whole cache.</p></div>
+      <div class="card"><h3><span class="glyph">⇉</span>Single- and multi-site</h3>
+        <p>One upstream with direct repository paths, or
+        <code>/site/…</code> prefixes selecting between hosts. Per-site
+        credential hosts by default; a credential-bearing request with the
+        wrong Host gets 421 before the origin is contacted.</p></div>
+      <div class="card"><h3><span class="glyph">⚿</span>SSH password proxy</h3>
+        <p>An optional frontend terminates SSH and submits the same
+        password or token to the origin. Strict host-key verification with
+        optional <code>accept-new</code> enrollment; key-only clients are
+        rejected with an explanatory banner.</p></div>
+      <div class="card"><h3><span class="glyph">⇅</span>LFS passthrough</h3>
+        <p>Git LFS authentication and transfer commands pass through with
+        restricted download/upload. Original endpoints and signed object
+        URLs are preserved — LFS data stays on the origin's storage.</p></div>
+      <div class="card"><h3><span class="glyph">◍</span>Observable by default</h3>
+        <p><code>/healthz</code> and <code>/metrics</code>: local,
+        hydration, passthrough and authorization-denial counters, cache
+        bytes, evictions, in-flight requests. Logs omit credentials and
+        upstream Git stderr.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">Quick start</span>
+      <h2>Up in one command.</h2>
+    </div>
+    <div class="terminals">
+      <div>
+        <h3>Docker</h3>
+<pre><code>docker compose up -d --build --wait
+
+<span class="c"># multi-site default (github + gitlab), loopback-bound:</span>
+git clone http://127.0.0.1:8080/github/git/git.git
+
+<span class="c"># the first clone hydrates the cache, the second is local;
+# every fetch response carries:</span>
+<span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># then HIT</span></code></pre>
+      </div>
+      <div>
+        <h3>Existing checkouts</h3>
+<pre><code><span class="c"># rewrite origin URLs, fleet-wide — plain git, no plugins:</span>
+git config --global \
+  url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
+
+<span class="c"># credentials are provided for the CDN domain
+# and forwarded to the origin on every fetch</span></code></pre>
+      </div>
+      <div>
+        <h3>From source</h3>
+<pre><code>go build -o bin/git-cdn ./cmd/git-cdn
+cp config.example.yaml ~/.git-cdn/config.yaml
+./bin/git-cdn   <span class="c"># listens on 127.0.0.1:8080</span>
+
+<span class="c"># needs Go 1.26+ and Git 2.45+ (reftable, protocol v2,
+# cruft packs); Linux or macOS</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="kicker">Architecture</span>
+      <h2>One proxy, two paths.</h2>
+      <p class="lede">Cacheable v2 fetches run the authorize / verify /
+      hydrate / serve pipeline over a persistent object store; everything
+      else — discovery, push, shallow and filtered requests, LFS — is
+      forwarded to the origin untouched.</p>
+    </div>
+    <figure class="arch">
+      <img src="assets/architecture.svg" alt="git-cdn architecture: git and SSH clients reach the HTTP v2 frontend or the SSH password proxy; a routing and eligibility policy sends cacheable v2 fetches through authorization, verification, exact-OID hydration and local upload-pack over a persistent object cache with LRU, geometric repack and cruft GC, while push, shallow, filter and LFS requests pass through to the origin" loading="lazy">
+      <figcaption>The full layer-by-layer map — authorization boundary,
+      object storage and hydration, capacity and concurrency, response
+      delivery — lives in
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">docs/design.md</a>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>
+      <a class="brand" href="./"><img src="assets/avatar.svg" alt="">git-cdn</a>
+      <p style="margin:8px 0 0;font-size:13px">MIT licensed · <a href="https://github.com/banyan-vcs/git-cdn/blob/main/LICENSE">license</a></p>
+    </div>
+    <nav>
+      <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
+      <a href="docs.html">Documentation</a>
+      <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">Design</a>
+      <a href="zh-cn/" lang="zh-CN" data-lang="zh">中文</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>
