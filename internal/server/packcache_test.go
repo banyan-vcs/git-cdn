@@ -2,13 +2,16 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/config"
 
@@ -121,4 +124,73 @@ func TestPackCacheRegeneratesTruncatedEntries(t *testing.T) {
 	require.EqualValues(t, "MISS", r2.Header.Get("X-GitCDN-Pack-Cache"), "truncated entry was served")
 	require.EqualValues(t, "HIT", r2.Header.Get("X-GitCDN-Cache-Status"))
 	require.True(t, len(b2) > 16, "regenerated response is truncated")
+}
+
+func TestPackCacheServesConcurrentIdenticalRequests(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	body := fetchBody(f.tip)
+	const requests = 8
+	bodies := make([][]byte, requests)
+	statuses := make([]string, requests)
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
+			bodies[i] = responseBody(t, r)
+			statuses[i] = r.Header.Get("X-GitCDN-Pack-Cache")
+		}()
+	}
+	wg.Wait()
+	require.EqualValues(t, 1, s.packStores.Load(), "concurrent identical clones generated %d packs", s.packStores.Load())
+	require.EqualValues(t, requests-1, s.packHits.Load(), "concurrent identical clones did not reuse the response")
+	generated := 0
+	for i := range requests {
+		require.Contains(t, []string{"MISS", "HIT"}, statuses[i], "request %d: unexpected status %q", i, statuses[i])
+		if statuses[i] == "MISS" {
+			generated++
+		}
+		require.EqualValues(t, bodies[0], bodies[i], "request %d received a different response", i)
+	}
+	require.EqualValues(t, 1, generated, "concurrent identical clones generated multiple responses")
+}
+
+func TestPackCacheHitSkipsRepositoryGate(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	body := fetchBody(f.tip)
+	r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
+	responseBody(t, r)
+	require.EqualValues(t, 1, s.packStores.Load())
+	identity := f.origin.URL + "/root/Group/Repo.git:sha1"
+	lease, err := s.store.Acquire(context.Background(), s.store.Key(identity))
+	require.NoError(t, err)
+	defer lease.Release()
+	// The warm response must stream while another holder keeps the
+	// repository gate: the fast path pins instead of acquiring.
+	done := make(chan *http.Response, 1)
+	go func() {
+		done <- postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
+	}()
+	select {
+	case warm := <-done:
+		require.EqualValues(t, "HIT", warm.Header.Get("X-GitCDN-Pack-Cache"))
+		require.NotEmpty(t, responseBody(t, warm))
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "test failed", "warm hit waited on the repository gate while another holder kept it")
+	}
+}
+
+func TestResponseFileCloseReleasesScopePin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pack")
+	require.NoError(t, os.WriteFile(path, []byte("response"), 0600))
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	pins := 0
+	f := &responseFile{file: file, budget: &responseBudget{limit: 1 << 20}, limit: 1 << 20, persist: true, unpin: func() { pins++ }}
+	require.NoError(t, f.Close())
+	require.NoError(t, f.Close())
+	require.EqualValues(t, 1, pins, "pin released %d times", pins)
 }

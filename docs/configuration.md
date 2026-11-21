@@ -122,7 +122,9 @@ request bytes and the live ref snapshot: a new tip, a new tag or different
 capabilities produce a different key and a fresh generation. Requests with
 client haves never enter the cache. Reuse skips hydration, ref views and
 upload-pack entirely; the live upstream authorization probe still runs for
-every request. Entries are self-contained files under the repository scope
+every request, and hits are served without taking the repository lock, so
+concurrent warm clones of one repository stream in parallel. Entries are
+self-contained files under the repository scope
 (`repos/<hash>/packcache/`): they count toward the persistent cache budget,
 survive restarts, and disappear with whole-scope LRU eviction. Within a
 scope, `max_pack_cache_bytes` (1 GiB by default, per repository) evicts the

@@ -75,7 +75,8 @@ type responseFile struct {
 	budget  *responseBudget
 	limit   int64
 	bytes   int64
-	persist bool // cached packs are shared entries, not spool files
+	persist bool   // cached packs are shared entries, not spool files
+	unpin   func() // optional: releases the scope pin when streaming ends
 	once    sync.Once
 	err     error
 }
@@ -101,10 +102,14 @@ func (f *responseFile) Write(p []byte) (int, error) {
 }
 
 // Close holds the budget until the response file has been removed. Files
-// served from the response pack cache are shared and stay on disk.
+// served from the response pack cache are shared and stay on disk; their
+// scope pin is released once the transfer has finished reading the file.
 func (f *responseFile) Close() error {
 	f.once.Do(func() {
 		f.err = f.file.Close()
+		if f.unpin != nil {
+			f.unpin()
+		}
 		if f.persist {
 			return
 		}

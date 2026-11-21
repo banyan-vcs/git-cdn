@@ -147,6 +147,9 @@ func (s *Store) ensureScope(key string) error {
 	return nil
 }
 
+// removeScope is swapped out by tests to simulate eviction failures.
+var removeScope = os.RemoveAll
+
 // Caller holds mu. Only unpinned entries may be removed, including pending waiters.
 func (s *Store) makeRoomLocked(additional int64) error {
 	if additional < 0 || additional > s.maxBytes {
@@ -167,10 +170,18 @@ func (s *Store) makeRoomLocked(additional int64) error {
 		}
 		return candidates[i].accessed.Before(candidates[j].accessed)
 	})
+	var evictErr error
 	for _, e := range candidates {
 		path := filepath.Join(s.Root, "repos", e.key)
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("evict repository cache: %w", err)
+		if err := removeScope(path); err != nil {
+			// A busy candidate — for example a response still streaming on
+			// Windows — must not wedge admission for the rest of the cache.
+			// Evict the remaining candidates and report the failure only
+			// when capacity is still short.
+			if evictErr == nil {
+				evictErr = fmt.Errorf("evict repository cache: %w", err)
+			}
+			continue
 		}
 		s.usedBytes -= e.size
 		s.evictions++
@@ -179,6 +190,9 @@ func (s *Store) makeRoomLocked(additional int64) error {
 		if s.usedBytes+s.reservedBytes <= s.maxBytes-additional {
 			return nil
 		}
+	}
+	if evictErr != nil {
+		return evictErr
 	}
 	return ErrCapacity
 }

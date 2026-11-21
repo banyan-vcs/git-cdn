@@ -4,7 +4,7 @@
 
 `max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/` repositories, including packs, indexes, refs and repository metadata. Authorized users share the same repository objects; one cache directory shares that budget across sites and repositories.
 
-Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Active and queued leases pin their entry, including while staging reads its objects through alternates.
+Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Active and queued leases pin their entry, including while staging reads its objects through alternates. Streams served from the response pack cache pin their scope without the repository gate and release the pin — refreshing recency — when the transfer ends, so an in-flight response cannot lose its scope mid-stream. A candidate whose removal fails is skipped and reported without aborting admission for the remaining candidates.
 
 LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough.
 

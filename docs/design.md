@@ -68,7 +68,7 @@ Startup merges legacy credential scopes into `repos/<repository-hash>/repo.git` 
 
 Persistent repository scopes use LRU with capacity reservations and restartable access timestamps. Active and queued leases protect their objects. Oversized requests and fully pinned capacity use upstream fallback. Temporary files have separate operating constraints; the admission limit is not a filesystem quota. See [Cache policy](cache-policy.md).
 
-The current per-scope gate is exclusive and covers validation, hydration and local pack generation. HTTP transfers can overlap after spool generation ends, but same-scope packing is serialized. A global limit controls all native Git processes, including metadata commands.
+The current per-scope gate is exclusive and covers validation, hydration and local pack generation. HTTP transfers can overlap after spool generation ends, but same-scope packing is serialized. Response-pack hits bypass the gate: they pin the scope against eviction, stream the stored file and release the pin when the transfer ends, so concurrent warm clones of one repository neither queue on the gate nor start Git processes. A global limit controls all native Git processes, including metadata commands.
 
 Capacity accounting and eviction currently perform filesystem work under the store mutex. Future improvements should separate read pins from write/maintenance locks, move expensive deletion out of the global critical section, and avoid rescanning unchanged scopes on every release.
 

@@ -20,8 +20,12 @@ import (
 // Entries share the repository scope, so they count toward the persistent
 // cache budget and disappear with whole-scope LRU eviction.
 
+func (s *Store) packDir(scope string) string {
+	return filepath.Join(s.Root, "repos", scope, "packcache")
+}
+
 func (l *Lease) packDir() string {
-	return filepath.Join(filepath.Dir(l.Dir), "packcache")
+	return l.store.packDir(l.entry.key)
 }
 
 // Entries carry the published size in their name and a mismatch on lookup
@@ -30,13 +34,16 @@ func packName(key []byte, size int64) string {
 	return fmt.Sprintf("%x-%d", key, size)
 }
 
-// LookupPack opens a stored response for key. A nil file with a nil error
-// means the key is absent; the caller streams the file and closes it.
-func (l *Lease) LookupPack(key []byte) (*os.File, error) {
-	if l.store.PackCacheBytes() <= 0 || len(key) != 32 {
+// LookupPack opens the stored response for key in the named scope. A nil
+// file with a nil error means the key is absent; the caller streams the
+// file and closes it. No repository lease is required: racing eviction is
+// safe because callers pin the scope, and an opened file streams even
+// after its directory disappears.
+func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
+	if s.PackCacheBytes() <= 0 || len(key) != 32 || !validKey(scope) {
 		return nil, nil
 	}
-	dir := l.packDir()
+	dir := s.packDir(scope)
 	prefix := fmt.Sprintf("%x-", key)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -67,6 +74,11 @@ func (l *Lease) LookupPack(key []byte) (*os.File, error) {
 		return file, nil
 	}
 	return nil, nil
+}
+
+// LookupPack opens a stored response for key under the lease's scope.
+func (l *Lease) LookupPack(key []byte) (*os.File, error) {
+	return l.store.LookupPack(l.entry.key, key)
 }
 
 // StorePack publishes the spooled response at source under key and prunes

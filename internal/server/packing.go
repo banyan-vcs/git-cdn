@@ -68,16 +68,33 @@ func (s *Server) PrepareSSH(ctx context.Context, identity string, fetch protocol
 func (s *Server) prepareObjects(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (*responseFile, string, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.gitTimeout)
 	defer cancel()
-	lease, err := s.store.Acquire(ctx, s.store.Key(identity))
+	scope := s.store.Key(identity)
+	key := s.packCacheKey(identity, fetch, data, snapshot)
+	if key != nil {
+		// Warm responses skip the repository gate entirely: pin the scope
+		// against eviction, stream the stored file and never start a Git
+		// process. A missing scope or entry falls through to the gated
+		// path, which also collapses concurrent cold requests into a
+		// single generation.
+		if unpin := s.store.Pin(scope); unpin != nil {
+			if stored, err := s.store.LookupPack(scope, key); err == nil && stored != nil {
+				s.packHits.Add(1)
+				return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}, "HIT", true, nil
+			}
+			unpin()
+		}
+	}
+	lease, err := s.store.Acquire(ctx, scope)
 	if err != nil {
 		return nil, "", false, err
 	}
 	defer lease.Release()
-	key := s.packCacheKey(identity, fetch, data, snapshot)
 	if key != nil {
 		if stored, err := lease.LookupPack(key); err == nil && stored != nil {
 			s.packHits.Add(1)
-			return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true}, "HIT", true, nil
+			// Convert the lease into a streaming pin: the response outlives
+			// the gate, but eviction cannot remove its scope mid-stream.
+			return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: s.store.Pin(scope)}, "HIT", true, nil
 		}
 	}
 	roots := unique(fetch.Wants)

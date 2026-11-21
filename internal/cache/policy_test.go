@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -116,6 +117,48 @@ func TestPinnedScopeRejectsAdmissionUntilReleased(t *testing.T) {
 		_, err := os.Stat(a)
 		require.True(t, os.IsNotExist(err), "released old scope was not evicted")
 	}
+}
+
+func TestPinProtectsScopeFromEviction(t *testing.T) {
+	s := testStore(t, 100)
+	a := storedBytes(t, s, "a", 60) // least recently used
+	storedBytes(t, s, "b", 40)
+	require.Nil(t, s.Pin(s.Key("absent")), "pinning an unknown scope must be a no-op")
+	unpin := s.Pin(s.Key("a"))
+	require.NotNil(t, unpin, "pinning a stored scope failed")
+	c := testLease(t, s, "c")
+	require.ErrorIs(t, publishBytes(t, c, 50), ErrCapacity, "admission succeeded although the only remaining bytes were pinned")
+	require.DirExists(t, a, "pinned scope was evicted")
+	c.Release()
+	unpin()
+	c = testLease(t, s, "c")
+	require.NoError(t, publishBytes(t, c, 50))
+	c.Release()
+	require.NoDirExists(t, a, "unpinned scope was not evicted afterwards")
+}
+
+func TestEvictionSkipsBusyCandidate(t *testing.T) {
+	s := testStore(t, 100)
+	a := storedBytes(t, s, "a", 60) // least recent; removal fails
+	b := storedBytes(t, s, "b", 40)
+	busy := filepath.Join(s.Root, "repos", s.Key("a"))
+	previous := removeScope
+	removeScope = func(path string) error {
+		if path == busy {
+			return fmt.Errorf("scope is busy")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { removeScope = previous })
+	c := testLease(t, s, "c")
+	err := publishBytes(t, c, 50)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "scope is busy")
+	require.NotErrorIs(t, err, ErrCapacity, "a failed removal must be reported distinctly")
+	c.Release()
+	require.DirExists(t, a, "busy scope was dropped from accounting despite the failed removal")
+	require.NoDirExists(t, b, "eviction stopped at the busy candidate instead of continuing")
+	require.EqualValues(t, 1, s.Stats().Evictions, "wrong accounting: %+v", s.Stats())
 }
 
 func TestQueuedLeasePinsTheSameEntry(t *testing.T) {

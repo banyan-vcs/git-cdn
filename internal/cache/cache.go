@@ -187,6 +187,42 @@ func (l *Lease) Release() {
 	l.release(true)
 }
 
+// Pin marks the scope for key as in use without holding its gate, so
+// eviction cannot remove it while the caller streams its files. The
+// returned function releases the pin and refreshes scope recency; it is
+// nil when the scope is absent, in which case there is nothing to protect
+// and the caller falls back to the gated path.
+func (s *Store) Pin(key string) func() {
+	if !validKey(key) {
+		return nil
+	}
+	s.mu.Lock()
+	e := s.entries[key]
+	if e == nil {
+		s.mu.Unlock()
+		return nil
+	}
+	e.users++
+	e.accessed = time.Now()
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		e.users--
+		e.accessed = time.Now()
+		if e.size > 0 {
+			access := filepath.Join(s.Root, "repos", e.key, ".access")
+			if err := os.WriteFile(access, nil, 0600); err == nil {
+				_ = os.Chtimes(access, e.accessed, e.accessed)
+			}
+		}
+		if e.users == 0 && e.size == 0 {
+			delete(s.entries, e.key)
+			_ = os.Remove(filepath.Join(s.Root, "repos", e.key))
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (l *Lease) release(schedule bool) {
 	s := l.store
 	s.mu.Lock()
