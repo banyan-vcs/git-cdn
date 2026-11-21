@@ -61,10 +61,10 @@ directory so the next request regenerates. Concurrent identical requests
 collapse to one generation per entry — on a warm scope a shared-lease
 flight serializes the upload-pack run — and warm hits share one read of
 the entry through a bounded in-memory broadcast whose block buffers come
-from a fixed free list and whose slow consumers fall back to their own
-file reads. Startup also sweeps staging leftovers of interrupted
-publications under the directory lock. See
-[Configuration](configuration.md#response-pack-cache).
+from a pooled free list (drained by the collector under memory pressure)
+and whose slow consumers fall back to their own file reads. Startup also
+sweeps staging leftovers of interrupted publications under the directory
+lock. See [Configuration](configuration.md#response-pack-cache).
 
 ## Temporary storage
 

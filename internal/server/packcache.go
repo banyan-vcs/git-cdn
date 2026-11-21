@@ -13,10 +13,10 @@ import (
 // --depth=1 or --filter fleets — carry their directives in the request
 // bytes, so identical batches share one entry. The key binds the repository
 // identity, the exact decoded request bytes (wants, capabilities, deepen
-// and filter directives as upload-pack saw them) and the live ref snapshot;
-// a changed snapshot — new tips or new tags, which redirect include-tag
-// output even for identical want sets — produces a different key and a
-// fresh generation.
+// and filter directives as upload-pack saw them) and the live ref
+// snapshot's parse-time fingerprint; a changed snapshot — new tips or new
+// tags, which redirect include-tag output even for identical want sets —
+// produces a new key and a fresh generation.
 func (s *Server) packCacheKey(identity string, fetch protocol.Fetch, data []byte, snapshot protocol.Snapshot) []byte {
 	if s.store.PackCacheBytes() <= 0 || !fetch.CacheableFetch() {
 		return nil
@@ -26,15 +26,7 @@ func (s *Server) packCacheKey(identity string, fetch protocol.Fetch, data []byte
 	h.Write([]byte{0})
 	h.Write(data)
 	h.Write([]byte{0})
-	for _, ref := range snapshot.Refs {
-		h.Write([]byte(ref.Name))
-		h.Write([]byte{0})
-		h.Write([]byte(ref.OID))
-		h.Write([]byte{0})
-		h.Write([]byte(ref.Peeled))
-		h.Write([]byte{0})
-		h.Write([]byte(ref.Symref))
-		h.Write([]byte{0})
-	}
+	fingerprint := snapshot.Fingerprint()
+	h.Write(fingerprint[:])
 	return h.Sum(nil)
 }

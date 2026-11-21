@@ -34,6 +34,7 @@ type Server struct {
 	requests         *requestLimiter
 	responses        *responseBudget
 	trustedProxies   []*net.IPNet
+	proxyAllow       []string
 	probes           probeCache
 	fanouts          fanoutRegistry
 	flights          flightCache
@@ -121,6 +122,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		s.config.AuthHeaders[i] = http.CanonicalHeaderKey(s.config.AuthHeaders[i])
 	}
 	sort.Strings(s.config.AuthHeaders)
+	s.proxyAllow = append(append([]string{}, proxyHeaders...), s.config.AuthHeaders...)
 	return s, nil
 }
 

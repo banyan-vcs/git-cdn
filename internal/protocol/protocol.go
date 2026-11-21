@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -224,6 +225,12 @@ type Ref struct {
 type Snapshot struct {
 	Refs       []Ref
 	ObservedAt time.Time
+	// fingerprint digests the accepted ref list in order, so request keys
+	// bind a 32-byte summary instead of re-hashing every ref per request.
+	// allowed is the OID set authorization checks membership in. Both are
+	// built once at parse time and never mutated afterwards.
+	fingerprint [32]byte
+	allowed     map[string]struct{}
 }
 
 func RefName(name string) bool {
@@ -250,6 +257,8 @@ func ParseRefs(data []byte) (Snapshot, error) {
 	var s Snapshot
 	ended := false
 	names := make(map[string]bool)
+	digest := sha256.New()
+	allowed := make(map[string]struct{})
 	for len(data) > 0 {
 		p, rest, err := nextPacket(data)
 		if err != nil {
@@ -295,27 +304,37 @@ func ParseRefs(data []byte) (Snapshot, error) {
 		}
 		names[ref.Name] = true
 		s.Refs = append(s.Refs, ref)
+		allowed[ref.OID] = struct{}{}
+		if ref.Peeled != "" {
+			allowed[ref.Peeled] = struct{}{}
+		}
+		for _, field := range [...]string{ref.Name, ref.OID, ref.Peeled, ref.Symref} {
+			digest.Write([]byte(field))
+			digest.Write([]byte{0})
+		}
 	}
 	if !ended {
 		return s, fmt.Errorf("unterminated ref response")
 	}
+	copy(s.fingerprint[:], digest.Sum(nil))
+	s.allowed = allowed
 	return s, nil
 }
 
+// Fingerprint returns the parse-time ref digest that request keys bind
+// instead of re-hashing the whole ref list per request.
+func (s Snapshot) Fingerprint() [32]byte { return s.fingerprint }
+
 func (s Snapshot) Allows(wants []string) bool {
-	allowed := make(map[string]bool)
-	for _, ref := range s.Refs {
-		allowed[ref.OID] = true
-		if ref.Peeled != "" {
-			allowed[ref.Peeled] = true
-		}
+	if len(wants) == 0 {
+		return false
 	}
 	for _, want := range wants {
-		if !allowed[want] {
+		if _, ok := s.allowed[want]; !ok {
 			return false
 		}
 	}
-	return len(wants) > 0
+	return true
 }
 
 func LSRefsRequest() []byte {

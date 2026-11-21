@@ -114,6 +114,33 @@ func TestSnapshotAuthorizationOnlyUsesFreshAdvertisedObjects(t *testing.T) {
 	require.EqualValues(t, "refs/heads/Main", s.Refs[1].Name, "snapshot authorization or case changed")
 }
 
+// The parse-time fingerprint stands in for the whole ref list inside
+// request keys, so anything that changes the list must change it.
+func TestSnapshotFingerprintBindsTheRefList(t *testing.T) {
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	build := func(lines ...string) []byte {
+		var data []byte
+		for _, line := range lines {
+			data = append(data, Encode(line+"\n")...)
+		}
+		return append(data, "0000"...)
+	}
+	first, err := ParseRefs(build(a+" refs/heads/main", b+" refs/heads/dev"))
+	require.NoError(t, err)
+	again, err := ParseRefs(build(a+" refs/heads/main", b+" refs/heads/dev"))
+	require.NoError(t, err)
+	reordered, err := ParseRefs(build(b+" refs/heads/dev", a+" refs/heads/main"))
+	require.NoError(t, err)
+	withUnborn, err := ParseRefs(build("unborn HEAD symref-target:refs/heads/main", a+" refs/heads/main"))
+	require.NoError(t, err)
+	shorter, err := ParseRefs(build(a + " refs/heads/main"))
+	require.NoError(t, err)
+	require.Equal(t, first.Fingerprint(), again.Fingerprint(), "identical ref lists must share one fingerprint")
+	require.NotEqual(t, first.Fingerprint(), reordered.Fingerprint(), "ref order is part of the fingerprint")
+	require.NotEqual(t, first.Fingerprint(), withUnborn.Fingerprint(), "an unborn ref shifts the fingerprint")
+	require.NotEqual(t, first.Fingerprint(), shorter.Fingerprint(), "a missing ref changes the fingerprint")
+}
+
 func FuzzParseFetch(f *testing.F) {
 	f.Add(request("want "+strings.Repeat("a", 40), "done"))
 	f.Add([]byte("0000"))

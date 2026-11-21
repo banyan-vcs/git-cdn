@@ -85,7 +85,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, rt route, reason 
 			pr.Out.URL.RawQuery = r.URL.RawQuery
 			pr.Out.Host = rt.base.Host
 			pr.Out.Header = make(http.Header)
-			for _, name := range append(append([]string{}, proxyHeaders...), s.config.AuthHeaders...) {
+			for _, name := range s.proxyAllow {
 				for _, value := range r.Header.Values(name) {
 					pr.Out.Header.Add(name, value)
 				}

@@ -13,11 +13,12 @@ import (
 // distributes shared blocks to subscriber queues, so a fleet of identical
 // requests costs one disk read instead of one per response. Memory is hard
 // bounded: every block holds one slot of a fixed semaphore (fanoutPoolBlocks
-// x fanoutBlockSize), block buffers come from a bounded free list and are
-// reused across streams instead of reallocated per block, and a subscriber
-// whose bounded queue is full detaches and finishes by reading the stored
-// file itself from its own offset, which also keeps detached transfers
-// correct when the pump ends first.
+// x fanoutBlockSize), block buffers come from a pooled free list reused
+// across streams — and the pool is elastic: under a soft memory limit the
+// collector drains it instead of counting idle buffers against the budget —
+// while a subscriber whose bounded queue is full detaches and finishes by
+// reading the stored file itself from its own offset, which also keeps
+// detached transfers correct when the pump ends first.
 const (
 	fanoutBlockSize  = 64 << 10
 	fanoutQueueDepth = 2
@@ -28,7 +29,7 @@ type fanoutRegistry struct {
 	mu       sync.Mutex
 	active   map[string]*fanout
 	slots    chan struct{}
-	pool     chan []byte
+	buffers  sync.Pool
 	shutdown chan struct{}
 	workers  sync.WaitGroup
 }
@@ -36,7 +37,10 @@ type fanoutRegistry struct {
 func (r *fanoutRegistry) init() {
 	r.active = make(map[string]*fanout)
 	r.slots = make(chan struct{}, fanoutPoolBlocks)
-	r.pool = make(chan []byte, fanoutPoolBlocks)
+	r.buffers.New = func() any {
+		buffer := make([]byte, fanoutBlockSize)
+		return &buffer
+	}
 	r.shutdown = make(chan struct{})
 }
 
@@ -81,13 +85,12 @@ func (b *fanoutBlock) release() {
 	}
 }
 
-// recycle returns a buffer to the free list; a full list hands it to the
-// collector instead of blocking.
+// recycle returns a buffer to the free list. The pooled pointers keep the
+// list elastic: a GC under memory pressure empties it instead of letting
+// idle buffers count against a soft memory limit.
 func (r *fanoutRegistry) recycle(buf []byte) {
-	select {
-	case r.pool <- buf[:cap(buf)]:
-	default:
-	}
+	buffer := buf[:cap(buf)]
+	r.buffers.Put(&buffer)
 }
 
 type fanout struct {
@@ -204,12 +207,10 @@ func (f *fanout) acquire() []byte {
 	case <-f.reg.shutdown:
 		return nil
 	}
-	select {
-	case buf := <-f.reg.pool:
-		return buf[:fanoutBlockSize]
-	default:
-		return make([]byte, fanoutBlockSize)
+	if buffer, ok := f.reg.buffers.Get().(*[]byte); ok {
+		return (*buffer)[:fanoutBlockSize]
 	}
+	return make([]byte, fanoutBlockSize)
 }
 
 // deliver shares one read block with every subscriber. A full queue detaches

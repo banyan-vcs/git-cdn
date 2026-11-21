@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,15 +31,29 @@ func New(binary string, concurrency int) (*Runner, error) {
 	return &Runner{Binary: path, slots: make(chan struct{}, concurrency)}, nil
 }
 
-func Environment(extra map[string]string) []string {
-	var env []string
-	for _, v := range os.Environ() {
-		name, _, _ := strings.Cut(v, "=")
-		if strings.HasPrefix(name, "GIT_") || strings.HasPrefix(name, "SSH_") || name == "LANG" || name == "LC_ALL" || strings.EqualFold(name, "http_proxy") || strings.EqualFold(name, "https_proxy") || strings.EqualFold(name, "all_proxy") || strings.EqualFold(name, "no_proxy") {
-			continue
+// baseEnvironment filters the process environment once; every spawned git
+// inherits the same stable prefix, so a process-heavy request path does not
+// re-walk os.Environ per invocation.
+var (
+	baseEnvOnce sync.Once
+	baseEnv     []string
+)
+
+func baseEnvironment() []string {
+	baseEnvOnce.Do(func() {
+		for _, v := range os.Environ() {
+			name, _, _ := strings.Cut(v, "=")
+			if strings.HasPrefix(name, "GIT_") || strings.HasPrefix(name, "SSH_") || name == "LANG" || name == "LC_ALL" || strings.EqualFold(name, "http_proxy") || strings.EqualFold(name, "https_proxy") || strings.EqualFold(name, "all_proxy") || strings.EqualFold(name, "no_proxy") {
+				continue
+			}
+			baseEnv = append(baseEnv, v)
 		}
-		env = append(env, v)
-	}
+	})
+	return baseEnv
+}
+
+func Environment(extra map[string]string) []string {
+	env := append([]string{}, baseEnvironment()...)
 	defaults := map[string]string{
 		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull,
 		"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",

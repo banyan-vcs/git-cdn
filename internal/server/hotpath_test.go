@@ -90,9 +90,11 @@ func TestWarmHitAllocationBudget(t *testing.T) {
 	require.Less(t, int64(perRequest), int64(512<<10), "warm hits allocate more than the response size per request")
 }
 
-// Broadcast buffers return to the registry free list after a stream ends
-// and are reused by the next stream.
-func TestFanoutBuffersAreReused(t *testing.T) {
+// Broadcast block slots return to the semaphore once streams end, so the
+// pool's memory stays bounded by live transfers and the next broadcast
+// finds capacity. (Buffer reuse itself is covered by the warm-hit
+// allocation budget above.)
+func TestFanoutSlotsReturnAfterStreams(t *testing.T) {
 	f := bigFixture(t, 512<<10)
 	s, h := newCDN(t, f, nil)
 	body := fetchBody(f.tip)
@@ -100,5 +102,6 @@ func TestFanoutBuffersAreReused(t *testing.T) {
 		digest, _ := drain(t, h.URL, body)
 		require.NotEmpty(t, digest)
 	}
-	require.Greater(t, len(s.fanouts.pool), 0, "broadcast buffers were not returned to the free list")
+	require.Eventually(t, func() bool { return len(s.fanouts.slots) == 0 },
+		5*time.Second, 10*time.Millisecond, "block slots leaked after broadcasts ended")
 }
