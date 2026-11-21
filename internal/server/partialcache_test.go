@@ -3,8 +3,10 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -45,21 +47,46 @@ func TestFilteredFetchesShareOneGeneration(t *testing.T) {
 	require.NotEmpty(t, payload)
 }
 
-// Shallow traffic alone must not run full-fetch reconciliation: storage
-// refs stay untouched until a complete fetch observes the snapshot.
-func TestShallowFetchesDoNotReconcileStorageRefs(t *testing.T) {
+// Shallow traffic reconciles storage refs in the background too: every
+// request carries a complete live snapshot from its probe, and the
+// debounced idle-only reconcile names the upstream refs without ever
+// blocking the response path.
+func TestShallowFetchesReconcileInBackground(t *testing.T) {
 	f := newFixture(t)
 	s, h := newCDN(t, f, nil)
-	body := fetchBody(f.tip, "deepen 1")
-	for range 2 {
-		responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
-	}
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
 	repos, err := filepath.Glob(filepath.Join(s.store.Root, "repos", "*", "repo.git"))
 	require.NoError(t, err)
 	require.NotEmpty(t, repos, "no cached repository was created")
-	for _, repo := range repos {
-		require.Empty(t, testGit(t, repo, "for-each-ref", "--format=%(refname)", "refs/cache/upstream"), "shallow traffic reconciled storage refs")
-	}
+	require.EqualValues(t, 1, len(repos))
+	require.Eventually(t, func() bool {
+		return metricValue(t, h, "gitcdn_reconciles_total") >= 1
+	}, 15*time.Second, 50*time.Millisecond, "shallow traffic never reconciled")
+	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/upstream/"), "refs/cache/upstream/heads/main", "reconcile did not name the upstream tip")
+}
+
+// End-to-end prune: after the upstream tip moves, the next shallow fetch
+// retires the old root into the retention grace period, so the scope stops
+// pinning history nothing advertises.
+func TestShallowFleetRetiresOldRootsAfterDrift(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
+	repos, err := filepath.Glob(filepath.Join(s.store.Root, "repos", "*", "repo.git"))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, len(repos))
+	oldTip := f.tip
+	f.commit(t, "drift")
+	// Move main and drop the tag, so the old tip leaves the advertised set
+	// entirely; a tag still pointing at it would legitimately keep it.
+	testGit(t, f.work, "push", "--quiet", f.repo, "main", ":refs/tags/v1")
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
+	require.Eventually(t, func() bool {
+		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
+		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
+	}, 45*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
+	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/retained/"), "refs/cache/retained/"+oldTip, "retired root did not enter the grace period")
+	require.GreaterOrEqual(t, metricValue(t, h, "gitcdn_roots_retired_total"), 1, "retirement was not counted")
 }
 
 // A batch of concurrent shallow fetches on a warm scope collapses into one

@@ -313,9 +313,10 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	if lease, err := s.store.AcquireShared(ctx, scope); err == nil {
 		if file, served, packHit := s.serveShared(ctx, lease, scope, key, fetch, snapshot, data); served {
 			lease.Release()
-			if fetch.FullFetch() {
-				s.store.Reconcile(scope, snapshot)
-			}
+			// Every locally served fetch carries a complete live snapshot
+			// from its authorization probe; debounced, idle-only
+			// reconciliation follows it in the background.
+			s.store.Reconcile(scope, snapshot)
 			return file, "HIT", packHit, nil
 		}
 		lease.Release()
@@ -376,6 +377,10 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	if err != nil {
 		return nil, "", false, err
 	}
+	// For full fetches the inline SyncRefs above already applied the
+	// snapshot, and the debounced call no-ops; partial and incremental
+	// generations schedule their prune through the background path.
+	s.store.Reconcile(scope, snapshot)
 	status := "MISS"
 	if hit {
 		status = "HIT"

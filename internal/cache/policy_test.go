@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,7 +82,13 @@ func TestCloseJoinsInFlightReconcile(t *testing.T) {
 		s.Close()
 	})
 
-	s.Reconcile(key, protocol.Snapshot{ObservedAt: time.Now()})
+	// The debounce gates compare parse-time fingerprints, so the snapshot
+	// must be built the way the server builds it, not by a struct literal.
+	data := append(protocol.Encode(strings.Repeat("a", 40)+" refs/heads/main\n"), []byte("0000")...)
+	snapshot, err := protocol.ParseRefs(data)
+	require.NoError(t, err)
+	snapshot.ObservedAt = time.Now()
+	s.Reconcile(key, snapshot)
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):

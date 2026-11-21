@@ -45,7 +45,26 @@ type entry struct {
 	// warm lookups Stat one file instead of scanning the directory. It is
 	// guarded by Store.mu and rebuilt at startup.
 	packs map[string]int64
+	// Reconciliation debounce: reconcileFP is the fingerprint of the last
+	// snapshot SyncRefs applied, hydrateSince counts hydrations since that
+	// application (the accumulation gate for snapshots that never drift),
+	// and reconcileFailedAt backs off retries after a failed attempt.
+	reconcileFP     [32]byte
+	hydrateSince    int
+	reconcileFailed time.Time
 }
+
+// reconcileHydrationDelta bounds root accumulation between reconciles when
+// the upstream ref picture never changes: fleets fetching unadvertised
+// SHAs hydrate one root per fetch without moving any advertised ref, so
+// after this many hydrations a reconcile is due even though the snapshot
+// fingerprint is unchanged.
+const reconcileHydrationDelta = 64
+
+// reconcileFailureBackoff throttles reconciliation retries after a failed
+// SyncRefs attempt, so a persistently failing scope cannot turn every
+// request into another background git run.
+const reconcileFailureBackoff = 30 * time.Second
 
 func newEntry(key string) *entry {
 	return &entry{key: key, changed: make(chan struct{}), lastGC: time.Now()}
@@ -96,12 +115,14 @@ type Stats struct {
 	GCs           uint64
 	GCFailed      uint64
 	GCSkipped     uint64
+	Reconciles    uint64
+	RootsRetired  uint64
 }
 
 func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped, GCs: s.gcs, GCFailed: s.gcFailed, GCSkipped: s.gcSkipped}
+	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped, GCs: s.gcs, GCFailed: s.gcFailed, GCSkipped: s.gcSkipped, Reconciles: s.reconciles, RootsRetired: s.rootsRetired}
 }
 
 func digest(s string) bool {

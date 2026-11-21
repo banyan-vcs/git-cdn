@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -49,13 +50,11 @@ func TestSharedFullFetchReconcilesRefsInBackground(t *testing.T) {
 	require.EqualValues(t, "MISS", r.Header.Get("X-GitCDN-Pack-Cache"), "shared serving reused a stale-snapshot entry")
 	require.EqualValues(t, 1, s.hydrated.Load(), "object-complete fetch hydrated anyway")
 	identity := f.origin.URL + "/root/Group/Repo.git:sha1"
+	dir := filepath.Join(s.store.Root, "repos", s.store.Key(identity), "repo.git")
+	// Probe without taking the gate: a queued exclusive acquire would
+	// preempt the very reconciliation this test waits for.
 	require.Eventually(t, func() bool {
-		l, err := s.store.Acquire(context.Background(), s.store.Key(identity))
-		if err != nil {
-			return false
-		}
-		defer l.Release()
-		_, err = s.git.Output(context.Background(), l.Dir, "", "show-ref", "--verify", "refs/cache/upstream/tags/v2")
+		_, err := s.git.Output(context.Background(), dir, "", "show-ref", "--verify", "refs/cache/upstream/tags/v2")
 		return err == nil
 	}, 15*time.Second, 100*time.Millisecond, "background reconciliation never recorded the new tag")
 }

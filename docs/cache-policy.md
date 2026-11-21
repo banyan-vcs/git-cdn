@@ -8,7 +8,7 @@ Each scope has a persisted `.access` timestamp. Startup reconstructs size and re
 
 LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough.
 
-Full unfiltered fetches with no haves and `done` reconcile cached refs against the complete live snapshot. Available complete roots are pinned and mapped to `refs/cache/upstream/`; obsolete cached refs and old roots are removed. Unrequested branches are not downloaded. Unpinning removes a retention ref, not an individual pack. Source refs and current requested roots still govern every response.
+Every locally served fetch reconciles cached refs against its complete live snapshot in the background — debounced by fingerprint drift or hydration accumulation, and running only while the scope is idle. Available complete roots are pinned and mapped to `refs/cache/upstream/`; roots the snapshot no longer names retire into the retention grace period, which bounds root accumulation for fleets that never stop at any advertised ref. Unrequested branches are not downloaded. Unpinning removes a retention ref, not an individual pack. Source refs and current requested roots still govern every response.
 
 ## Ref storage
 

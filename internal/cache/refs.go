@@ -88,6 +88,9 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	if err != nil {
 		return err
 	}
+	// Roots leaving the advertised set retire into the grace period; the
+	// count feeds the retirement metric.
+	var retired int
 	retained, err := readRetention(l.Dir)
 	if err != nil {
 		return err
@@ -116,6 +119,9 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 				retained[fields[1]] = time.Now().UnixNano()
 			}
 			desired[retainedPrefix+fields[1]] = fields[1]
+			if strings.HasPrefix(fields[0], "refs/cache/roots/") {
+				retired++
+			}
 		}
 	}
 	retentionData, err := json.Marshal(retained)
@@ -163,6 +169,7 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	}
 	if updates.Len() == 0 && oldHead == head && !retentionChanged {
 		l.entry.refsObservedAt = snapshot.ObservedAt
+		l.recordReconcile(snapshot, retired)
 		return nil
 	}
 	if updates.Len() > 0 || oldHead != head {
@@ -199,5 +206,18 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 		}
 	}
 	l.entry.refsObservedAt = snapshot.ObservedAt
+	l.recordReconcile(snapshot, retired)
 	return nil
+}
+
+// recordReconcile marks the snapshot as applied for trigger debouncing and
+// counts the roots retired into the retention grace period. The caller has
+// finished its ref transaction; this takes the store lock briefly.
+func (l *Lease) recordReconcile(snapshot protocol.Snapshot, retired int) {
+	l.store.mu.Lock()
+	l.entry.reconcileFP = snapshot.Fingerprint()
+	l.entry.hydrateSince = 0
+	l.store.reconciles++
+	l.store.rootsRetired += uint64(retired)
+	l.store.mu.Unlock()
 }

@@ -43,6 +43,8 @@ type Store struct {
 	gcs           uint64
 	gcFailed      uint64
 	gcSkipped     uint64
+	reconciles    uint64
+	rootsRetired  uint64
 }
 
 func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackOptions) (*Store, error) {
@@ -246,18 +248,30 @@ var reconcileHold func()
 
 // Reconcile refreshes the scope's storage refs to snapshot on a background
 // exclusive lease. It never blocks or fails the caller; reconciliation
-// catches up on the next writer when the lease or the store is gone. The
+// catches up on the next trigger when the lease or the store is gone. The
 // goroutine joins the store's workers, so Close waits for a reconciliation
 // still holding its lease instead of racing its writes with removal of the
-// cache directory.
+// cache directory. Triggers are debounced — the snapshot fingerprint must
+// drift from the last applied one, or hydrations must accumulate — and the
+// lease is taken only while the scope is completely idle, so reconciliation
+// never queues behind (and blocks) fresh readers; a queued request can also
+// preempt it through the maintenance cancellation hook.
 func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 	if s.Git == nil || s.maintenance == nil {
 		return
 	}
+	fp := snapshot.Fingerprint()
 	s.mu.Lock()
 	e := s.entries[key]
-	known := e != nil && e.size > 0
-	if !known || s.closed {
+	if e == nil || e.size == 0 || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	if fp == e.reconcileFP && e.hydrateSince < reconcileHydrationDelta {
+		s.mu.Unlock()
+		return
+	}
+	if !e.reconcileFailed.IsZero() && time.Since(e.reconcileFailed) < reconcileFailureBackoff {
 		s.mu.Unlock()
 		return
 	}
@@ -265,18 +279,65 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 	s.mu.Unlock()
 	go func() {
 		defer s.workers.Done()
-		ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
-		defer cancel()
-		lease, err := s.Acquire(ctx, key)
-		if err != nil {
-			return
+		for attempt := 0; attempt < 3; attempt++ {
+			ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
+			lease := s.acquireIdle(key, e, cancel)
+			if lease == nil {
+				cancel()
+				return
+			}
+			if hold := reconcileHold; hold != nil {
+				hold()
+			}
+			err := lease.SyncRefs(ctx, snapshot)
+			preempted := ctx.Err() != nil
+			cancel()
+			s.mu.Lock()
+			e.cancelMaint = nil
+			if err != nil {
+				e.reconcileFailed = time.Now()
+			}
+			s.mu.Unlock()
+			lease.Release()
+			if err == nil || !preempted || attempt == 2 {
+				return
+			}
+			// Preempted by a queued request: that request re-arms the
+			// trigger when its own generation path runs Reconcile again,
+			// but an aftermath of pure pack hits would not, so retry a
+			// bounded number of times before staying due.
+			time.Sleep(100 * time.Millisecond)
 		}
-		defer lease.Release()
-		if hold := reconcileHold; hold != nil {
-			hold()
-		}
-		_ = lease.SyncRefs(ctx, snapshot)
 	}()
+}
+
+// acquireIdle takes the exclusive gate for background reconciliation only
+// when the scope is completely idle — no readers, writers or waiters — and
+// registers maintenance preemption so a queued request cancels the work
+// instead of waiting behind it. A busy scope keeps the trigger due, and the
+// next request retries. The brief retry loop absorbs the microseconds in
+// which the spawning request path has not yet released its own lease.
+func (s *Store) acquireIdle(key string, e *entry, cancel context.CancelFunc) *Lease {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		if s.closed || s.entries[key] != e {
+			s.mu.Unlock()
+			return nil
+		}
+		if e.users == 0 && !e.writer && e.readers == 0 {
+			e.users++
+			e.writer = true
+			e.cancelMaint = cancel
+			s.mu.Unlock()
+			return &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e}
+		}
+		s.mu.Unlock()
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (l *Lease) Release() {

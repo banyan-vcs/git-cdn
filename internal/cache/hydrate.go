@@ -163,5 +163,10 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 	if err := l.publish(ctx, stage, roots, exists); err != nil {
 		return false, err
 	}
+	// Hydrations grow the root set; the count feeds the accumulation gate
+	// that reconciles scopes whose upstream snapshot never drifts.
+	l.store.mu.Lock()
+	l.entry.hydrateSince++
+	l.store.mu.Unlock()
 	return false, nil
 }
