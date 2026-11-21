@@ -58,8 +58,10 @@ func TestPackCacheEffectMeasurement(t *testing.T) {
 // TestPackCacheConcurrencyMeasurement compares parallel warm serving with
 // the response pack cache off versus on. Without the cache, same-scope
 // requests serialize on the repository gate and each runs upload-pack;
-// with it, hits pin the scope and stream in parallel. It is a measurement,
-// not a gate: run with GIT_CDN_PACK_BENCH=1.
+// with it, hits pin the scope and stream in parallel. It also reports the
+// parallel warm incremental-fetch time — the shared reader path that never
+// enters the pack cache. It is a measurement, not a gate: run with
+// GIT_CDN_PACK_BENCH=1.
 func TestPackCacheConcurrencyMeasurement(t *testing.T) {
 	if os.Getenv("GIT_CDN_PACK_BENCH") == "" {
 		t.Skip("set GIT_CDN_PACK_BENCH=1 to measure the response pack cache")
@@ -74,8 +76,9 @@ func TestPackCacheConcurrencyMeasurement(t *testing.T) {
 	}
 	testGit(t, f.work, "push", "--quiet", f.repo, "main")
 	body := fetchBody(f.tip)
+	incremental := fetchBody(f.tip, "have "+f.tip)
 	const workers, perWorker = 8, 10
-	measure := func(label string, packCache int64) time.Duration {
+	measure := func(label string, packCache int64, fetchBody []byte) time.Duration {
 		_, h := newCDN(t, f, func(c *config.Config) {
 			c.MaxPackCacheBytes = packCache
 			c.CacheDir = t.TempDir() // cold start per run
@@ -88,7 +91,7 @@ func TestPackCacheConcurrencyMeasurement(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for range perWorker {
-					responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
+					responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody, testAuthorization, nil))
 				}
 			}()
 		}
@@ -97,7 +100,8 @@ func TestPackCacheConcurrencyMeasurement(t *testing.T) {
 		t.Logf("%s: %d parallel warm requests in %v", label, workers*perWorker, elapsed)
 		return elapsed
 	}
-	off := measure("pack-cache off", -1)
-	on := measure("pack-cache on", 0)
-	t.Logf("parallel warm ratio %.2fx", float64(off)/float64(on))
+	off := measure("pack-cache off", -1, body)
+	on := measure("pack-cache on", 0, body)
+	t.Logf("parallel warm clone ratio %.2fx", float64(off)/float64(on))
+	measure("incremental fetches (shared readers)", 0, incremental)
 }

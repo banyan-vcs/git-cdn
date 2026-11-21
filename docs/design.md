@@ -68,9 +68,9 @@ Startup merges legacy credential scopes into `repos/<repository-hash>/repo.git` 
 
 Persistent repository scopes use LRU with capacity reservations and restartable access timestamps. Active and queued leases protect their objects. Oversized requests and fully pinned capacity use upstream fallback. Temporary files have separate operating constraints; the admission limit is not a filesystem quota. See [Cache policy](cache-policy.md).
 
-The current per-scope gate is exclusive and covers validation, hydration and local pack generation. HTTP transfers can overlap after spool generation ends, but same-scope packing is serialized. Response-pack hits bypass the gate: they pin the scope against eviction, stream the stored file and release the pin when the transfer ends, so concurrent warm clones of one repository neither queue on the gate nor start Git processes. A global limit controls all native Git processes, including metadata commands.
+The per-scope gate is a reader/writer lock. Hydration, ref reconciliation and maintenance hold it exclusively; validation, ref views and local pack generation run under shared reader leases, so warm incremental fetches of one repository proceed in parallel while writers wait, and waiting writers in turn block fresh readers to prevent starvation. Response-pack hits bypass the gate entirely: they pin the scope against eviction, stream the stored file and release the pin when the transfer ends. Storage-ref reconciliation for shared responses happens on a background writer instead of the response path. A queued request cancels long maintenance on its scope; maintenance retries on its next pass. A global limit controls all native Git processes, including metadata commands.
 
-Capacity accounting and eviction currently perform filesystem work under the store mutex. Future improvements should separate read pins from write/maintenance locks, move expensive deletion out of the global critical section, and avoid rescanning unchanged scopes on every release.
+Capacity accounting and eviction currently perform filesystem work under the store mutex. Future improvements should move expensive deletion out of the global critical section and avoid rescanning unchanged scopes on every writer release.
 
 ## Response delivery and performance
 

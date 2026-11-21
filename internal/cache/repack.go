@@ -78,16 +78,18 @@ func (s *Store) maintain() {
 				continue
 			}
 			e.repackPending = false
-			if e.users != 0 {
+			if e.users != 0 || e.writer || e.readers != 0 {
 				s.mu.Unlock()
 				continue
 			}
 			e.users++
-			e.gate <- struct{}{}
+			e.writer = true
 			collect := time.Since(e.lastGC) >= s.repack.GCInterval
+			ctx, cancel := context.WithTimeout(s.maintenance, s.repack.Timeout)
+			// Let queued requests preempt long maintenance; it retries later.
+			e.cancelMaint = cancel
 			s.mu.Unlock()
 			l := &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e}
-			ctx, cancel := context.WithTimeout(s.maintenance, s.repack.Timeout)
 			var changed bool
 			var err error
 			if collect {
@@ -97,6 +99,7 @@ func (s *Store) maintain() {
 			}
 			cancel()
 			s.mu.Lock()
+			e.cancelMaint = nil
 			if collect {
 				if err != nil {
 					s.gcFailed++

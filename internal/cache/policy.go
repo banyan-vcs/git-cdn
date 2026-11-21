@@ -1,26 +1,74 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
 var ErrCapacity = errors.New("repository cache capacity unavailable")
 
+// The per-scope gate is a reader/writer lock expressed through fields guarded
+// by Store.mu: readers add to readers, hydration/ref/repack writers hold
+// writer, and waiting writers count in writers so fresh readers cannot
+// starve them. changed is closed and recreated whenever the state moves;
+// waiters select on it alongside their context.
 type entry struct {
 	key            string
-	gate           chan struct{}
+	readers        int
+	writers        int
+	writer         bool
+	changed        chan struct{}
+	cancelMaint    context.CancelFunc
+	packMu         sync.Mutex
 	users          int
 	size           int64
 	accessed       time.Time
 	repackPending  bool
 	refsObservedAt time.Time
 	lastGC         time.Time
+}
+
+func newEntry(key string) *entry {
+	return &entry{key: key, changed: make(chan struct{}), lastGC: time.Now()}
+}
+
+// gateReady reports whether the requested mode can be taken now. Caller
+// holds Store.mu.
+func (e *entry) gateReady(shared bool) bool {
+	if shared {
+		return !e.writer && e.writers == 0
+	}
+	return !e.writer && e.readers == 0
+}
+
+func (e *entry) takeGate(shared bool) {
+	if shared {
+		e.readers++
+		return
+	}
+	e.writers--
+	e.writer = true
+}
+
+func (e *entry) dropGate(shared bool) {
+	if shared {
+		e.readers--
+		return
+	}
+	e.writer = false
+}
+
+// signalGate wakes all waiters. Caller holds Store.mu.
+func (e *entry) signalGate() {
+	close(e.changed)
+	e.changed = make(chan struct{})
 }
 
 type Stats struct {
@@ -118,7 +166,7 @@ func (s *Store) loadEntries() error {
 		if err != nil {
 			return err
 		}
-		s.entries[key] = &entry{key: key, gate: make(chan struct{}, 1), size: size, accessed: info.ModTime(), lastGC: lastGC}
+		s.entries[key] = &entry{key: key, changed: make(chan struct{}), size: size, accessed: info.ModTime(), lastGC: lastGC}
 		s.usedBytes += size
 	}
 	return nil

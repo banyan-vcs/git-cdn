@@ -84,8 +84,11 @@ func (l *Lease) LookupPack(key []byte) (*os.File, error) {
 // StorePack publishes the spooled response at source under key and prunes
 // the repository's response-pack budget oldest-first. It reports whether a
 // new entry was written; failures are recoverable, the caller keeps serving
-// from the spool.
+// from the spool. Concurrent shared leases serialize pack publication
+// through the scope's pack mutex without excluding readers elsewhere.
 func (l *Lease) StorePack(key []byte, source string) (bool, error) {
+	l.entry.packMu.Lock()
+	defer l.entry.packMu.Unlock()
 	limit := l.store.PackCacheBytes()
 	if limit <= 0 || len(key) != 32 {
 		return false, nil

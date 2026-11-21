@@ -23,6 +23,16 @@ func (l *Lease) complete(ctx context.Context, roots []string, all bool) bool {
 	return err == nil
 }
 
+// Complete reports whether every object reachable from roots is already
+// cached. Shared reader leases use it to decide whether a response can be
+// generated without an exclusive lease.
+func (l *Lease) Complete(ctx context.Context, roots []string) bool {
+	if _, err := os.Stat(filepath.Join(l.Dir, "HEAD")); err != nil {
+		return false
+	}
+	return l.complete(ctx, roots, false)
+}
+
 // Ensure receives objects in a separate repository before publishing complete roots.
 type HydrateSource func(context.Context, string, []string) error
 

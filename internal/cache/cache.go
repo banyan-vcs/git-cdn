@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/nativegit"
+	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
 
 type Store struct {
@@ -150,37 +151,92 @@ type Lease struct {
 	Dir   string
 	store *Store
 	entry *entry
+	// shared marks a reader lease: it excludes concurrent writers but not
+	// other readers, and it never mutates repository state.
+	shared bool
 }
 
+// Acquire takes the exclusive repository lease for key. Hydration, ref
+// reconciliation and maintenance writers require it.
 func (s *Store) Acquire(ctx context.Context, key string) (*Lease, error) {
-	s.mu.Lock()
+	return s.acquire(ctx, key, false)
+}
+
+// AcquireShared takes a reader lease for key. Concurrent readers run in
+// parallel; writers wait until the last reader releases.
+func (s *Store) AcquireShared(ctx context.Context, key string) (*Lease, error) {
+	return s.acquire(ctx, key, true)
+}
+
+func (s *Store) acquire(ctx context.Context, key string, shared bool) (*Lease, error) {
 	if !validKey(key) {
-		s.mu.Unlock()
 		return nil, fmt.Errorf("invalid cache key")
 	}
+	s.mu.Lock()
 	e := s.entries[key]
 	if e == nil {
-		e = &entry{key: key, gate: make(chan struct{}, 1), lastGC: time.Now()}
+		e = newEntry(key)
 		s.entries[key] = e
 	}
 	// Waiting callers also pin the entry so eviction cannot replace their gate.
 	e.users++
-	s.mu.Unlock()
-	select {
-	case e.gate <- struct{}{}:
-		s.mu.Lock()
-		e.accessed = time.Now()
-		s.mu.Unlock()
-		return &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e}, nil
-	case <-ctx.Done():
-		s.mu.Lock()
-		e.users--
-		if e.users == 0 && e.size == 0 {
-			delete(s.entries, e.key)
-		}
-		s.mu.Unlock()
-		return nil, ctx.Err()
+	if !shared {
+		e.writers++
 	}
+	for !e.gateReady(shared) {
+		// A waiting request preempts long maintenance: cancel it so the
+		// queued reader or writer can proceed; maintenance retries later.
+		if cancel := e.cancelMaint; cancel != nil {
+			cancel()
+		}
+		changed := e.changed
+		s.mu.Unlock()
+		select {
+		case <-changed:
+			s.mu.Lock()
+		case <-ctx.Done():
+			s.mu.Lock()
+			if !shared {
+				e.writers--
+			}
+			e.users--
+			if e.users == 0 && e.size == 0 {
+				delete(s.entries, e.key)
+			}
+			s.mu.Unlock()
+			return nil, ctx.Err()
+		}
+	}
+	e.takeGate(shared)
+	e.accessed = time.Now()
+	s.mu.Unlock()
+	return &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e, shared: shared}, nil
+}
+
+// Reconcile refreshes the scope's storage refs to snapshot on a background
+// exclusive lease. It never blocks or fails the caller; reconciliation
+// catches up on the next writer when the lease or the store is gone.
+func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
+	if s.Git == nil || s.maintenance == nil {
+		return
+	}
+	s.mu.Lock()
+	e := s.entries[key]
+	known := e != nil && e.size > 0
+	s.mu.Unlock()
+	if !known {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
+		defer cancel()
+		lease, err := s.Acquire(ctx, key)
+		if err != nil {
+			return
+		}
+		defer lease.Release()
+		_ = lease.SyncRefs(ctx, snapshot)
+	}()
 }
 
 func (l *Lease) Release() {
@@ -228,18 +284,28 @@ func (l *Lease) release(schedule bool) {
 	s.mu.Lock()
 	e := l.entry
 	e.accessed = time.Now()
-	if size, err := directorySize(filepath.Dir(l.Dir)); err == nil {
+	if l.shared {
+		// Readers never mutate the repository: refresh recency without
+		// rescanning unchanged bytes.
+		if e.size > 0 {
+			access := filepath.Join(filepath.Dir(l.Dir), ".access")
+			if err := os.WriteFile(access, nil, 0600); err == nil {
+				_ = os.Chtimes(access, e.accessed, e.accessed)
+			}
+		}
+	} else if size, err := directorySize(filepath.Dir(l.Dir)); err == nil {
 		s.usedBytes += size - e.size
 		e.size = size
-	}
-	if e.size > 0 {
-		access := filepath.Join(filepath.Dir(l.Dir), ".access")
-		if err := os.WriteFile(access, nil, 0600); err == nil {
-			_ = os.Chtimes(access, e.accessed, e.accessed)
+		if e.size > 0 {
+			access := filepath.Join(filepath.Dir(l.Dir), ".access")
+			if err := os.WriteFile(access, nil, 0600); err == nil {
+				_ = os.Chtimes(access, e.accessed, e.accessed)
+			}
 		}
 	}
+	e.dropGate(l.shared)
+	e.signalGate()
 	e.users--
-	<-e.gate
 	// Any overage from interrupted metadata writes is reclaimed when leases end.
 	_ = s.makeRoomLocked(0)
 	if e.users == 0 && e.size == 0 {
