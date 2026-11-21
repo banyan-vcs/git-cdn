@@ -19,7 +19,7 @@ func request(lines ...string) []byte {
 
 func TestUnsupportedObjectSelectionIsNeverLocal(t *testing.T) {
 	oid := strings.Repeat("a", 40)
-	for _, field := range []string{"want-ref refs/heads/CaseSensitive", "shallow " + oid, "deepen 1", "deepen-not refs/heads/Private", "filter blob:none", "packfile-uris https", "future-option value"} {
+	for _, field := range []string{"want-ref refs/heads/CaseSensitive", "shallow " + oid, "packfile-uris https", "future-option value"} {
 		f, err := ParseFetch(request("want "+oid, field, "done"))
 		require.NoError(t, err, "%q classified as local: %+v %v", field, f, err)
 		require.False(t, f.Supported, "%q classified as local: %+v %v", field, f, err)
@@ -27,6 +27,40 @@ func TestUnsupportedObjectSelectionIsNeverLocal(t *testing.T) {
 	f, err := ParseFetch(request("want "+strings.Repeat("a", 64), "done"))
 	require.NoError(t, err, "SHA-256 request must be forwarded")
 	require.False(t, f.Supported, "SHA-256 request must be forwarded")
+}
+
+// Partial-history directives stay local and cacheable: their directives
+// live in the request bytes, so identical shallow or filtered fetches are
+// reproducible, while full-fetch reconciliation excludes them.
+func TestPartialDirectivesAreLocalButNotFullFetches(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	for _, test := range []struct {
+		field  string
+		deepen bool
+		filter bool
+	}{
+		{"deepen 1", true, false},
+		{"deepen 2147483647", true, false},
+		{"deepen-relative", true, false},
+		{"deepen-since 2026-01-01T00:00:00Z", true, false},
+		{"deepen-not refs/heads/Private", true, false},
+		{"filter blob:none", false, true},
+		{"filter blob:limit=1024", false, true},
+		{"filter tree:0", false, true},
+	} {
+		f, err := ParseFetch(request("want "+oid, test.field, "done"))
+		require.NoError(t, err, "%q failed to parse: %+v %v", test.field, f, err)
+		require.True(t, f.Supported, "%q classified as unsupported: %+v", test.field, f)
+		require.Equal(t, test.deepen, f.Deepen, "%q deepen flag", test.field)
+		require.Equal(t, test.filter, f.Filter, "%q filter flag", test.field)
+		require.True(t, f.CacheableFetch(), "%q should be cacheable: %+v", test.field, f)
+		require.False(t, f.FullFetch(), "%q must not reconcile refs as a full fetch", test.field)
+	}
+	for _, field := range []string{"deepen 0", "deepen -1", "deepen x", "filter "} {
+		f, err := ParseFetch(request("want "+oid, field, "done"))
+		require.NoError(t, err, "%q failed to parse: %+v %v", field, f, err)
+		require.False(t, f.Supported, "%q classified as local: %+v", field, f)
+	}
 }
 
 func TestFullFetchOnlyReconcilesCompleteInitialRequests(t *testing.T) {

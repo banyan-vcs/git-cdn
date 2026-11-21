@@ -105,3 +105,50 @@ func TestPackCacheConcurrencyMeasurement(t *testing.T) {
 	t.Logf("parallel warm clone ratio %.2fx", float64(off)/float64(on))
 	measure("incremental fetches (shared readers)", 0, incremental)
 }
+
+// TestShallowBatchMeasurement reports the depth=1 fleet scenario: many
+// concurrent identical shallow fetches of the same tip. With shallow
+// eligibility each batch costs one generation plus broadcasts; with the pack
+// cache off every request runs its own upload-pack. It is a measurement,
+// not a gate: run with GIT_CDN_PACK_BENCH=1.
+func TestShallowBatchMeasurement(t *testing.T) {
+	if os.Getenv("GIT_CDN_PACK_BENCH") == "" {
+		t.Skip("set GIT_CDN_PACK_BENCH=1 to measure the shallow batch path")
+	}
+	f := newFixture(t)
+	random := rand.New(rand.NewSource(42))
+	blob := make([]byte, 64<<10)
+	for i := range 80 {
+		random.Read(blob)
+		require.NoError(t, os.WriteFile(filepath.Join(f.work, "data.bin"), blob, 0600))
+		f.commit(t, "bulk "+string(rune('a'+i%26)))
+	}
+	testGit(t, f.work, "push", "--quiet", f.repo, "main")
+	shallow := fetchBody(f.tip, "deepen 1")
+	const clients = 16
+	measure := func(label string, packCache int64) time.Duration {
+		_, h := newCDN(t, f, func(c *config.Config) {
+			c.MaxPackCacheBytes = packCache
+			c.CacheDir = t.TempDir() // cold start per run
+		})
+		// Warm the scope with a full clone once so the batch measures the
+		// shallow serving path, not first hydration.
+		responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil))
+		start := time.Now()
+		var wg sync.WaitGroup
+		for range clients {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", shallow, testAuthorization, nil))
+			}()
+		}
+		wg.Wait()
+		elapsed := time.Since(start)
+		t.Logf("%s: %d concurrent shallow fetches in %v", label, clients, elapsed)
+		return elapsed
+	}
+	off := measure("shallow batch pack-cache off", -1)
+	on := measure("shallow batch pack-cache on", 0)
+	t.Logf("shallow batch ratio %.2fx", float64(off)/float64(on))
+}

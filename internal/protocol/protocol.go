@@ -65,7 +65,13 @@ type Fetch struct {
 	Haves      []string
 	IncludeTag bool
 	Done       bool
-	Supported  bool
+	// Deepen and Filter record partial-history directives (shallow cutoffs
+	// and object filters). They keep the request cacheable — the directives
+	// are part of the request bytes — but exclude it from full-fetch ref
+	// reconciliation.
+	Deepen    bool
+	Filter    bool
+	Supported bool
 }
 
 func IsV2(header string) bool {
@@ -161,6 +167,27 @@ func ParseFetch(data []byte) (Fetch, error) {
 		case line == "done":
 			f.Done = true
 		case line == "thin-pack", line == "ofs-delta", line == "no-progress", line == "wait-for-done":
+		case strings.HasPrefix(line, "deepen "):
+			depth := strings.TrimPrefix(line, "deepen ")
+			if n, err := strconv.Atoi(depth); err != nil || n <= 0 {
+				f.Supported = false
+			} else {
+				f.Deepen = true
+			}
+		case line == "deepen-relative":
+			f.Deepen = true
+		case strings.HasPrefix(line, "deepen-since "), strings.HasPrefix(line, "deepen-not "):
+			if len(strings.Fields(line)) < 2 {
+				f.Supported = false
+			} else {
+				f.Deepen = true
+			}
+		case strings.HasPrefix(line, "filter "):
+			if strings.TrimPrefix(line, "filter ") == "" {
+				f.Supported = false
+			} else {
+				f.Filter = true
+			}
 		default:
 			f.Supported = false
 		}
@@ -171,6 +198,19 @@ func ParseFetch(data []byte) (Fetch, error) {
 // FullFetch identifies initial unfiltered requests. Git does not distinguish a
 // clone from a fetch into an empty repository on the wire.
 func (f Fetch) FullFetch() bool {
+	return f.cacheableShape() && !f.Deepen && !f.Filter
+}
+
+// CacheableFetch identifies requests whose response is a pure function of the
+// repository identity, the exact request bytes and the live ref snapshot:
+// done-terminated fetches without client haves, including shallow and
+// filtered shapes such as git fetch --depth=1 fleets. Incremental fetches
+// embed client-specific negotiation state and never qualify.
+func (f Fetch) CacheableFetch() bool {
+	return f.cacheableShape()
+}
+
+func (f Fetch) cacheableShape() bool {
 	return f.Command == "fetch" && f.Supported && f.Done && len(f.Haves) == 0 && len(f.Wants) > 0
 }
 

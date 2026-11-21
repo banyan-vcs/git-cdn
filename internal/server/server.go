@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -34,6 +35,8 @@ type Server struct {
 	responses        *responseBudget
 	trustedProxies   []*net.IPNet
 	probes           probeCache
+	fanouts          fanoutRegistry
+	flights          flightCache
 	rejected         atomic.Uint64
 	local            atomic.Uint64
 	hydrated         atomic.Uint64
@@ -43,6 +46,9 @@ type Server struct {
 	probeMerged      atomic.Uint64
 	packHits         atomic.Uint64
 	packStores       atomic.Uint64
+	fanoutSubs       atomic.Uint64
+	fanoutDetached   atomic.Uint64
+	flightWaits      atomic.Uint64
 }
 
 func New(c config.Config, logger *slog.Logger) (*Server, error) {
@@ -91,6 +97,13 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	s.writeIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
 	s.requestTimeout, _ = time.ParseDuration(c.RequestTimeout)
 	s.probes.init(parseProbeTTL(c.AuthProbeCacheTTL))
+	s.fanouts.init()
+	// A soft memory limit makes the collector work harder as the heap
+	// approaches it instead of growing into an out-of-memory kill. It
+	// bounds this process only; child Git processes have their own limits.
+	if c.MemoryLimitBytes > 0 {
+		debug.SetMemoryLimit(c.MemoryLimitBytes)
+	}
 	for _, cidr := range c.TrustedProxyCIDRs {
 		_, network, _ := net.ParseCIDR(cidr)
 		s.trustedProxies = append(s.trustedProxies, network)
@@ -114,5 +127,8 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 // Close must be called after the HTTP server has stopped handling requests.
 func (s *Server) Close() error {
 	s.transport.CloseIdleConnections()
+	// Pumps stop and detach their subscribers, so in-flight transfers fall
+	// back to their own file reads instead of truncating.
+	s.fanouts.close()
 	return s.store.Close()
 }

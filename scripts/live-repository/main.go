@@ -631,7 +631,7 @@ func (s *suite) run() bool {
 		repo, details := s.clone("partial", "partial", "")
 		partial = repo
 		statuses := details["cache_statuses"].([]string)
-		check(len(statuses) > 0 && statuses[len(statuses)-1] == "BYPASS", "partial clone missed compatibility passthrough")
+		check(len(statuses) > 0 && (statuses[len(statuses)-1] == "MISS" || statuses[len(statuses)-1] == "HIT"), "partial clone missed local serving")
 		return details
 	})
 	s.runCase("partial_lazy_blob", func() map[string]any { check(partial != "", "partial clone failed"); return s.lazyBlob(partial, nil) })

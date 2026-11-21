@@ -38,6 +38,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "gitcdn_gcs_total %d\ngitcdn_gc_failures_total %d\ngitcdn_gc_skipped_total %d\n", stats.GCs, stats.GCFailed, stats.GCSkipped)
 		fmt.Fprintf(w, "gitcdn_active_requests %d\ngitcdn_rejected_requests_total %d\ngitcdn_temp_response_bytes %d\ngitcdn_temp_response_max_bytes %d\n", s.requests.active(), s.rejected.Load(), s.responses.bytes(), s.config.MaxTempResponseBytes)
 		fmt.Fprintf(w, "gitcdn_pack_cache_hits_total %d\ngitcdn_pack_cache_stores_total %d\n", s.packHits.Load(), s.packStores.Load())
+		fmt.Fprintf(w, "gitcdn_response_fanout_subscribers_total %d\ngitcdn_response_fanout_detached_total %d\n", s.fanoutSubs.Load(), s.fanoutDetached.Load())
+		fmt.Fprintf(w, "gitcdn_generation_flight_waits_total %d\n", s.flightWaits.Load())
 		fmt.Fprintf(w, "gitcdn_auth_probe_cache_hits_total %d\ngitcdn_auth_probes_merged_total %d\n", s.probeHits.Load(), s.probeMerged.Load())
 		return
 	}

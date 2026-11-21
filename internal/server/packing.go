@@ -3,12 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/chiyutianyi/git-cdn/internal/cache"
 	"github.com/chiyutianyi/git-cdn/internal/config"
@@ -65,6 +67,60 @@ func (s *Server) PrepareSSH(ctx context.Context, identity string, fetch protocol
 	return file, status, packHit, err
 }
 
+// warmResponse wraps a stored pack entry for streaming. Concurrent
+// identical requests share one read through a response broadcast; a
+// subscriber that cannot keep up detaches and finishes from its own file
+// reads, and joining falls back to a private stream when no broadcast can
+// take the subscription.
+func (s *Server) warmResponse(scope string, key []byte, stored *os.File, unpin func()) *responseFile {
+	fallback := &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}
+	info, err := stored.Stat()
+	if err != nil {
+		return fallback
+	}
+	registryKey := scope + "/" + hex.EncodeToString(key)
+	sub := s.fanouts.join(registryKey, stored.Name(), stored, func() { s.fanoutDetached.Add(1) })
+	if sub == nil {
+		return fallback
+	}
+	s.fanoutSubs.Add(1)
+	return &responseFile{stream: sub, size: info.Size(), budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}
+}
+
+// flightCache single-flights identical cacheable generations among shared
+// readers of a warm scope: readers never block each other, so without this
+// gate a batch of identical requests would each run upload-pack in
+// parallel. The leader publishes the stored entry; waiters stream it.
+type flightCache struct {
+	mu sync.Mutex
+	m  map[string]chan struct{}
+}
+
+// waitOrLead returns the in-flight generation's done channel for waiters,
+// or a lead function the leader must call exactly once when its generation
+// ends, whether it stored an entry or failed.
+func (c *flightCache) waitOrLead(key string) (<-chan struct{}, func()) {
+	c.mu.Lock()
+	if c.m == nil {
+		c.m = make(map[string]chan struct{})
+	}
+	if done, ok := c.m[key]; ok {
+		c.mu.Unlock()
+		return done, nil
+	}
+	done := make(chan struct{})
+	c.m[key] = done
+	c.mu.Unlock()
+	return done, func() {
+		close(done)
+		c.mu.Lock()
+		if c.m[key] == done {
+			delete(c.m, key)
+		}
+		c.mu.Unlock()
+	}
+}
+
 // tagRoots expands the root set with snapshot tags whose targets descend
 // from wants, bounded by the local validation budget.
 func tagRoots(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, wants []string, base int) ([]string, error) {
@@ -104,7 +160,7 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 			s.packHits.Add(1)
 			// Convert the reader lease into a streaming pin: the response
 			// outlives it, but eviction cannot remove its scope mid-stream.
-			return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: s.store.Pin(scope)}, true, true
+			return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
 		}
 	}
 	roots := unique(fetch.Wants)
@@ -127,6 +183,34 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 			return nil, false, false
 		}
 	}
+	if key != nil {
+		// Shared readers never block each other, so identical cacheable
+		// requests on a warm scope would each run upload-pack. One reader
+		// leads the generation; the rest wait and stream its entry.
+		done, lead := s.flights.waitOrLead(scope + "/" + hex.EncodeToString(key))
+		if lead == nil {
+			s.flightWaits.Add(1)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, false, false
+			}
+			if stored, err := lease.LookupPack(key); err == nil && stored != nil {
+				s.packHits.Add(1)
+				return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
+			}
+			// The leader failed; this reader generates without a new flight.
+		} else {
+			// A leader may have published between the entry lookup above
+			// and this registration.
+			if stored, err := lease.LookupPack(key); err == nil && stored != nil {
+				lead()
+				s.packHits.Add(1)
+				return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
+			}
+			defer lead()
+		}
+	}
 	view, err := lease.View(ctx, snapshot, roots)
 	if err != nil {
 		return nil, false, false
@@ -143,7 +227,7 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 			file.Close()
 		}
 	}()
-	if err := s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "upload-pack", "--stateless-rpc", view); err != nil {
+	if err := s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view); err != nil {
 		return nil, false, false
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -174,7 +258,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		if unpin := s.store.Pin(scope); unpin != nil {
 			if stored, err := s.store.LookupPack(scope, key); err == nil && stored != nil {
 				s.packHits.Add(1)
-				return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}, "HIT", true, nil
+				return s.warmResponse(scope, key, stored, unpin), "HIT", true, nil
 			}
 			unpin()
 		}
@@ -203,7 +287,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 			s.packHits.Add(1)
 			// Convert the lease into a streaming pin: the response outlives
 			// the gate, but eviction cannot remove its scope mid-stream.
-			return &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: s.store.Pin(scope)}, "HIT", true, nil
+			return s.warmResponse(scope, key, stored, s.store.Pin(scope)), "HIT", true, nil
 		}
 	}
 	roots := unique(fetch.Wants)
@@ -264,7 +348,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 			file.Close()
 		}
 	}()
-	err = s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "upload-pack", "--stateless-rpc", view)
+	err = s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view)
 	if err != nil {
 		return nil, "", false, err
 	}

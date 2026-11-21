@@ -35,12 +35,21 @@ func testGit(t *testing.T, dir string, args ...string) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = nativegit.Environment(map[string]string{
+	env := nativegit.Environment(map[string]string{
 		"GIT_AUTHOR_NAME": "CDN Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
 		"GIT_COMMITTER_NAME": "CDN Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
 		"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": "Authorization: " + testAuthorization,
 		"GIT_CONFIG_KEY_1": "protocol.version", "GIT_CONFIG_VALUE_1": "2",
 	})
+	// This helper emulates clients and origin tooling, not the service: lazy
+	// fetching stays enabled so partial clones can fetch missing objects.
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "GIT_NO_LAZY_FETCH=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	cmd.Env = filtered
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %v: %v\n%s", args, err, out)
 	return strings.TrimSpace(string(out))
@@ -72,6 +81,9 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, os.MkdirAll(filepath.Dir(f.repo), 0700))
 	testGit(t, "", "clone", "--quiet", "--bare", f.work, f.repo)
 	testGit(t, f.repo, "config", "uploadpack.allowFilter", "true")
+	// GitHub allows fetching unadvertised objects, which partial clones rely
+	// on for lazy blob reads routed through the proxy path.
+	testGit(t, f.repo, "config", "uploadpack.allowAnySHA1InWant", "true")
 	f.origin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/root/") {
 			http.NotFound(w, r)

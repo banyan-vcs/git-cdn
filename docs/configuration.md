@@ -89,6 +89,7 @@ site prefix in multi-site mode.
 | `git_timeout` | 2m | Total local deadline, including queueing, validation, hydration, and packing |
 | `upstream_timeout` | 30s | Deadline for the live ref probe |
 | `auth_probe_cache_ttl` | 0s (disabled) | Lifetime for reusing a successful authorization probe; see [Authorization probes](#authorization-probes) |
+| `memory_limit_bytes` | 0 (disabled) | Go soft memory limit for the service process; the collector works harder near the limit instead of growing toward an out-of-memory kill. Bounds this process only — child Git processes and the on-disk budgets are unaffected |
 
 ```yaml
 max_cache_bytes: 21474836480 # 20 GiB

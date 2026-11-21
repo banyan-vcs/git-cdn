@@ -73,6 +73,7 @@ type Config struct {
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
 	MaxTempResponseBytes      int64               `json:"max_temp_response_bytes" yaml:"max_temp_response_bytes"`
 	MaxPackCacheBytes         int64               `json:"max_pack_cache_bytes" yaml:"max_pack_cache_bytes"`
+	MemoryLimitBytes          int64               `json:"memory_limit_bytes" yaml:"memory_limit_bytes"`
 	AuthProbeCacheTTL         string              `json:"auth_probe_cache_ttl" yaml:"auth_probe_cache_ttl"`
 	WriteIdleTimeout          string              `json:"write_idle_timeout" yaml:"write_idle_timeout"`
 	RequestTimeout            string              `json:"request_timeout" yaml:"request_timeout"`
@@ -224,6 +225,12 @@ func (c *Config) validateLimits() error {
 	}
 	if c.MaxPackCacheBytes < 0 {
 		c.MaxPackCacheBytes = 0
+	}
+	// Zero keeps the runtime default (no soft memory limit); negative is a
+	// configuration error rather than a silent clamp, since a too-small
+	// limit would thrash the collector instead of failing loudly here.
+	if c.MemoryLimitBytes < 0 {
+		return fmt.Errorf("memory_limit_bytes must not be negative")
 	}
 	if c.MaxConcurrentGit == 0 {
 		c.MaxConcurrentGit = 4

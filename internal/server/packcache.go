@@ -7,15 +7,18 @@ import (
 )
 
 // packCacheKey derives the verbatim response key for a request. Only
-// clone-shaped fetches (done, unfiltered, no haves) participate: their
-// request bytes repeat across clients, while incremental fetches embed
-// client-specific haves that defeat reuse. The key binds the repository
-// identity, the exact decoded request bytes (wants, capabilities, flags as
-// upload-pack saw them) and the live ref snapshot; a changed snapshot — new
-// tips or new tags, which redirect include-tag output even for identical
-// want sets — produces a different key and a fresh generation.
+// cacheable fetches (done, no haves) participate: their request bytes
+// repeat across clients, while incremental fetches embed client-specific
+// haves that defeat reuse. Shallow and filtered shapes — git fetch
+// --depth=1 or --filter fleets — carry their directives in the request
+// bytes, so identical batches share one entry. The key binds the repository
+// identity, the exact decoded request bytes (wants, capabilities, deepen
+// and filter directives as upload-pack saw them) and the live ref snapshot;
+// a changed snapshot — new tips or new tags, which redirect include-tag
+// output even for identical want sets — produces a different key and a
+// fresh generation.
 func (s *Server) packCacheKey(identity string, fetch protocol.Fetch, data []byte, snapshot protocol.Snapshot) []byte {
-	if s.store.PackCacheBytes() <= 0 || !fetch.FullFetch() {
+	if s.store.PackCacheBytes() <= 0 || !fetch.CacheableFetch() {
 		return nil
 	}
 	h := sha256.New()

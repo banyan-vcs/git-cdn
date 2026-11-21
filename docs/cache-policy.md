@@ -44,16 +44,22 @@ The repository lease can end before a spool response finishes transmission becau
 
 ## Response pack cache
 
-Clone-shaped requests reuse their completed responses verbatim. Entries
-live under `repos/<identity>/packcache/`, keyed by the repository identity,
-the exact decoded request bytes and the live ref snapshot, so a new tip or
-tag produces a new key. A hit streams the stored file without consulting
-repository objects, hydration or upload-pack; the per-request upstream
-authorization probe is unchanged. Entry bytes count toward the scope size
-and the persistent budget, and per-scope retention is bounded by
-`max_pack_cache_bytes` (oldest first, oversized responses never stored).
-Startup also sweeps staging leftovers of interrupted publications under
-the directory lock. See [Configuration](configuration.md#response-pack-cache).
+Cacheable requests — done-terminated fetches without client haves, which
+includes shallow and filtered shapes — reuse their completed responses
+verbatim. Entries live under `repos/<identity>/packcache/`, keyed by the
+repository identity, the exact decoded request bytes and the live ref
+snapshot, so a new tip or tag produces a new key. A hit streams the stored
+file without consulting repository objects, hydration or upload-pack; the
+per-request upstream authorization probe is unchanged. Entry bytes count
+toward the scope size and the persistent budget, and per-scope retention
+is bounded by `max_pack_cache_bytes` (oldest first, oversized responses
+never stored). Concurrent identical requests collapse to one generation
+per entry — on a warm scope a shared-lease flight serializes the
+upload-pack run — and warm hits may share one read of the entry through a
+bounded in-memory broadcast whose slow consumers fall back to their own
+file reads. Startup also sweeps staging leftovers of interrupted
+publications under the directory lock. See
+[Configuration](configuration.md#response-pack-cache).
 
 ## Temporary storage
 

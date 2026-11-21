@@ -108,11 +108,9 @@ func TestDeletedRefOIDGoesToOrigin(t *testing.T) {
 func TestUnsupportedRequestsAndPushAreProxied(t *testing.T) {
 	f := newFixture(t)
 	s, h := newCDN(t, f, nil)
-	for _, args := range [][]string{{"deepen 1"}, {"filter blob:none"}} {
-		r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, args...), testAuthorization, nil)
-		require.EqualValues(t, "BYPASS", r.Header.Get("X-GitCDN-Cache-Status"), "unsupported request entered local path")
-		responseBody(t, r)
-	}
+	// Shallow and filtered fetches now serve locally; the proxy contract for
+	// genuinely unsupported shapes is pinned by the protocol tests and the
+	// v0 alias test. This test keeps the push passthrough contract.
 	clone := filepath.Join(t.TempDir(), "client")
 	testGit(t, "", "clone", "--quiet", h.URL+"/gitlab/Group/Repo.git", clone)
 	require.NoError(t, os.WriteFile(filepath.Join(clone, "pushed.txt"), []byte("push data\n"), 0600))

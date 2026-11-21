@@ -72,6 +72,8 @@ func (b *responseBudget) bytes() int64 {
 
 type responseFile struct {
 	file    *os.File
+	stream  *fanoutSub // optional: broadcast subscription instead of a private file
+	size    int64      // entry size when stream is set
 	budget  *responseBudget
 	limit   int64
 	bytes   int64
@@ -81,12 +83,27 @@ type responseFile struct {
 	err     error
 }
 
-func (f *responseFile) Name() string               { return f.file.Name() }
-func (f *responseFile) Read(p []byte) (int, error) { return f.file.Read(p) }
+func (f *responseFile) Name() string {
+	if f.stream != nil {
+		return f.stream.f.path
+	}
+	return f.file.Name()
+}
+func (f *responseFile) Read(p []byte) (int, error) {
+	if f.stream != nil {
+		return f.stream.Read(p)
+	}
+	return f.file.Read(p)
+}
 func (f *responseFile) Seek(offset int64, whence int) (int64, error) {
 	return f.file.Seek(offset, whence)
 }
-func (f *responseFile) Stat() (os.FileInfo, error) { return f.file.Stat() }
+func (f *responseFile) Stat() (os.FileInfo, error) {
+	if f.stream != nil {
+		return staticFileInfo{name: f.Name(), size: f.size}, nil
+	}
+	return f.file.Stat()
+}
 
 func (f *responseFile) Write(p []byte) (int, error) {
 	if int64(len(p)) > f.limit-f.bytes {
@@ -104,9 +121,15 @@ func (f *responseFile) Write(p []byte) (int, error) {
 // Close holds the budget until the response file has been removed. Files
 // served from the response pack cache are shared and stay on disk; their
 // scope pin is released once the transfer has finished reading the file.
+// Broadcast subscriptions close their subscription instead of the pump's
+// shared file descriptor.
 func (f *responseFile) Close() error {
 	f.once.Do(func() {
-		f.err = f.file.Close()
+		if f.stream != nil {
+			f.err = f.stream.Close()
+		} else {
+			f.err = f.file.Close()
+		}
 		if f.unpin != nil {
 			f.unpin()
 		}
