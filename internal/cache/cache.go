@@ -290,11 +290,13 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 				hold()
 			}
 			err := lease.SyncRefs(ctx, snapshot)
-			preempted := ctx.Err() != nil
+			preempted := ctx.Err() == context.Canceled
 			cancel()
 			s.mu.Lock()
 			e.cancelMaint = nil
-			if err != nil {
+			// A foreground request cancels reconciliation to make progress.
+			// Its newer snapshot must not inherit failure backoff from that cancellation.
+			if err != nil && !preempted {
 				e.reconcileFailed = time.Now()
 			}
 			s.mu.Unlock()
