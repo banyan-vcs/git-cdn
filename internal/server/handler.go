@@ -99,7 +99,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, response, authCached, err := s.probe(r, rt)
 	if err != nil {
-		s.logger.Warn("upstream refs probe failed", "upstream", rt.id)
+		s.logger.WarnContext(r.Context(), "upstream refs probe failed", "upstream", rt.id)
 		http.Error(w, "upstream refs probe failed", http.StatusBadGateway)
 		return
 	}
@@ -155,7 +155,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	s.local.Add(1)
 	if _, err := io.Copy(w, file); err != nil {
-		s.logger.Debug("client transfer interrupted", "upstream", rt.id)
+		s.logger.DebugContext(r.Context(), "client transfer interrupted", "upstream", rt.id)
 	}
 }
 
