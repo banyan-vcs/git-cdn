@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>git-cdn — HTTP Git 缓存代理</title>
+    <script>
+      // Pre-paint theme: apply the stored manual choice before first paint
+      // (assets/theme.js owns the toggle wiring).
+      (function () {
+        try {
+          var t = localStorage.getItem("banyan.theme");
+          if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+      })();
+    </script>
 <meta name="description" content="git-cdn 是 HTTP Git 缓存代理：客户端保持原生 git，对象缓存在独立域名的共享对象库中，每次本地服务仍然用调用者自己的凭据在原站实时鉴权。">
 <meta property="og:title" content="git-cdn — HTTP Git 缓存代理">
 <meta property="og:description" content="对象进缓存，鉴权留原站。给 git 原站前面加一层缓存，客户端仍是原生 git。">
@@ -27,6 +37,7 @@
       <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
     </nav>
     <span class="lang"><a href="../" lang="en" data-lang="en">EN</a><b>中文</b></span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="theme"></button>
   </div>
 </header>
 
@@ -295,5 +306,6 @@ cp config.example.yaml ~/.git-cdn/config.yaml
   </div>
 </footer>
 
+    <script src="../assets/theme.js" defer></script>
 </body>
 </html>

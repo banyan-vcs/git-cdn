@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>git-cdn — an HTTP Git caching proxy</title>
+    <script>
+      // Pre-paint theme: apply the stored manual choice before first paint
+      // (assets/theme.js owns the toggle wiring).
+      (function () {
+        try {
+          var t = localStorage.getItem("banyan.theme");
+          if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+      })();
+    </script>
 <meta name="description" content="git-cdn is an HTTP Git caching proxy: plain git clients, a shared object cache on its own domain, and every locally served fetch still authorized live at the origin with the caller's credentials.">
 <meta property="og:title" content="git-cdn — an HTTP Git caching proxy">
 <meta property="og:description" content="Objects cached. Authorization live. A caching proxy in front of your git origin, for plain git clients.">
@@ -27,6 +37,7 @@
       <a href="https://github.com/banyan-vcs/git-cdn">GitHub</a>
     </nav>
     <span class="lang"><b>EN</b><a href="zh-cn/" lang="zh-CN" data-lang="zh">中文</a></span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="theme"></button>
   </div>
 </header>
 
@@ -314,5 +325,6 @@ cp config.example.yaml ~/.git-cdn/config.yaml
   </div>
 </footer>
 
+    <script src="assets/theme.js" defer></script>
 </body>
 </html>
