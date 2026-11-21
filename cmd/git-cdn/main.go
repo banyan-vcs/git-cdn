@@ -18,7 +18,9 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	level := slog.LevelInfo
+	flag.TextVar(&level, "log-level", slog.LevelInfo, "Log level: DEBUG, INFO, WARN or ERROR")
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: &level}))
 	if err := run(logger); err != nil {
 		logger.Error("git CDN failed", "error", err)
 		os.Exit(1)

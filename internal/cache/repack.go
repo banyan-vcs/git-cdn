@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 )
 
 type RepackOptions struct {
@@ -90,6 +93,12 @@ func (s *Store) maintain() {
 			e.cancelMaint = cancel
 			s.mu.Unlock()
 			l := &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e}
+			operation := "repack"
+			if collect {
+				operation = "gc"
+			}
+			ctx = logging.WithLogger(ctx, s.Git.Logger().With("cache_key", key, "operation", operation))
+			started := time.Now()
 			var changed bool
 			var err error
 			if collect {
@@ -98,6 +107,16 @@ func (s *Store) maintain() {
 				changed, err = l.Repack(ctx)
 			}
 			cancel()
+			attrs := []slog.Attr{slog.Int64("duration_ms", time.Since(started).Milliseconds()), slog.Bool("changed", changed)}
+			if err != nil {
+				logging.Failure(ctx, s.Git.Logger(), "cache maintenance failed", err, attrs...)
+			} else {
+				level := slog.LevelInfo
+				if !changed {
+					level = slog.LevelDebug
+				}
+				logging.Logger(ctx, s.Git.Logger()).LogAttrs(ctx, level, "cache maintenance completed", attrs...)
+			}
 			s.mu.Lock()
 			e.cancelMaint = nil
 			if collect {

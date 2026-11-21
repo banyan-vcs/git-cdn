@@ -15,6 +15,7 @@ import (
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 	"gitlab.com/banyan-vcs/git-cdn/internal/server"
@@ -322,6 +323,7 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 }
 
 func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, password []byte, command gitCommand, version string) (code uint32) {
+	ctx = logging.WithLogger(ctx, s.logger.With("transport", "ssh", "repository", command.repo, "command", command.name, "upstream_host", o.settings.Address))
 	started := time.Now()
 	output := &countingChannel{Channel: ch}
 	ch = output
@@ -334,7 +336,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		if ctx.Err() != nil {
 			level = slog.LevelDebug
 		}
-		s.logger.Log(ctx, level, "SSH session completed", "upstream_user", o.user, "repository", command.repo, "command", command.name,
+		logging.Logger(ctx, s.logger).Log(ctx, level, "SSH session completed", "upstream_user", o.user,
 			"cache_status", cacheStatus, "exit_status", code, "duration_ms", time.Since(started).Milliseconds(), "response_bytes", output.bytes)
 	}()
 	origin, err := o.open(ctx, password, command, version)
@@ -395,6 +397,9 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		refs, err := o.refs(probeCtx, password, s.cfg.MaxRefsBytes)
 		probeCancel()
 		if err != nil || !refs.Allows(fetch.Wants) {
+			if err == nil {
+				logging.Logger(ctx, s.logger).InfoContext(ctx, "SSH fetch forwarded", "reason", "unadvertised_oid")
+			}
 			return passthrough(data)
 		}
 		file, status, _, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {

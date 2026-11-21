@@ -53,10 +53,13 @@ type Server struct {
 }
 
 func New(c config.Config, logger *slog.Logger) (*Server, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	git, err := nativegit.New(c.GitBinary, c.MaxConcurrentGit)
+	git, err := nativegit.New(c.GitBinary, c.MaxConcurrentGit, nativegit.WithLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +82,6 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	t.DisableCompression = true
 	t.ResponseHeaderTimeout = 30 * time.Second
 	t.MaxConnsPerHost = c.MaxConcurrentRequests
-	if logger == nil {
-		logger = slog.Default()
-	}
 	s := &Server{
 		config:    c,
 		git:       git,

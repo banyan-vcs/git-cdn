@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,14 +13,30 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 )
 
 type Runner struct {
 	Binary string
 	slots  chan struct{}
+	logger *slog.Logger
 }
 
-func New(binary string, concurrency int) (*Runner, error) {
+type Option func(*Runner)
+
+func WithLogger(logger *slog.Logger) Option {
+	return func(r *Runner) { r.logger = logger }
+}
+
+func (r *Runner) Logger() *slog.Logger {
+	if r == nil || r.logger == nil {
+		return slog.Default()
+	}
+	return r.logger
+}
+
+func New(binary string, concurrency int, options ...Option) (*Runner, error) {
 	path, err := exec.LookPath(binary)
 	if err != nil {
 		return nil, err
@@ -28,7 +45,11 @@ func New(binary string, concurrency int) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{Binary: path, slots: make(chan struct{}, concurrency)}, nil
+	r := &Runner{Binary: path, slots: make(chan struct{}, concurrency)}
+	for _, option := range options {
+		option(r)
+	}
+	return r, nil
 }
 
 // baseEnvironment filters the process environment once; every spawned git
@@ -82,22 +103,33 @@ func ConfigEnvironment(pairs [][2]string) map[string]string {
 type cancellingWriter struct {
 	w      io.Writer
 	cancel context.CancelFunc
+	err    error
 }
 
-func (w cancellingWriter) Write(p []byte) (int, error) {
+func (w *cancellingWriter) Write(p []byte) (int, error) {
 	n, err := w.w.Write(p)
 	if err != nil {
+		w.err = err
 		w.cancel()
 	}
 	return n, err
 }
 
-func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer, env map[string]string, args ...string) error {
+func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io.Writer, env map[string]string, args ...string) (err error) {
+	started := time.Now()
+	var queueTime time.Duration
+	defer func() {
+		attrs := []slog.Attr{slog.String("command", commandName(args)), slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+			slog.Int64("queue_wait_ms", queueTime.Milliseconds()), slog.Bool("success", err == nil)}
+		attrs = append(attrs, logging.ErrorAttrs(err)...)
+		logging.Logger(ctx, r.Logger()).LogAttrs(ctx, slog.LevelDebug, "native Git command completed", attrs...)
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	select {
 	case r.slots <- struct{}{}:
+		queueTime = time.Since(started)
 		defer func() { <-r.slots }()
 	case <-ctx.Done():
 		return ctx.Err()
@@ -105,7 +137,8 @@ func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cmd := exec.CommandContext(childCtx, r.Binary, args...)
-	cmd.Dir, cmd.Stdin, cmd.Stdout = dir, stdin, cancellingWriter{w: stdout, cancel: cancel}
+	output := &cancellingWriter{w: stdout, cancel: cancel}
+	cmd.Dir, cmd.Stdin, cmd.Stdout = dir, stdin, output
 	cmd.Env = Environment(env)
 	cmd.Stderr = io.Discard
 	configureProcess(cmd)
@@ -114,10 +147,23 @@ func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if output.err != nil {
+			return fmt.Errorf("git output failed: %w", output.err)
+		}
 		// Git's stderr can contain upstream-provided text or authentication data.
 		return fmt.Errorf("git operation failed: %w", err)
 	}
 	return nil
+}
+
+func commandName(args []string) string {
+	for _, arg := range args {
+		switch arg {
+		case "init", "fetch", "upload-pack", "receive-pack", "index-pack", "rev-list", "update-ref", "for-each-ref", "cat-file", "merge-base", "repack", "prune", "symbolic-ref", "rev-parse":
+			return arg
+		}
+	}
+	return "other"
 }
 
 func (r *Runner) Output(ctx context.Context, dir string, input string, args ...string) ([]byte, error) {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 )
 
@@ -115,16 +117,36 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 	})
 }
 
-func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSource) (bool, error) {
+func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSource) (hit bool, err error) {
+	started := time.Now()
+	phase := "scope"
+	defer func() {
+		attrs := []slog.Attr{slog.String("cache_key", l.entry.key), slog.String("phase", phase), slog.Int("root_count", len(roots)),
+			slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		if err != nil {
+			if err == ErrCapacity {
+				attrs = append(attrs, slog.String("reason", "capacity_unavailable"))
+			}
+			logging.Failure(ctx, l.store.Git.Logger(), "cache hydration failed", err, attrs...)
+			return
+		}
+		if hit {
+			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelDebug, "cache objects reused", attrs...)
+		} else {
+			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelInfo, "cache objects hydrated", attrs...)
+		}
+	}()
 	g := l.store.Git
 	if err := l.store.ensureScope(l.entry.key); err != nil {
 		return false, err
 	}
 	_, existsErr := os.Stat(filepath.Join(l.Dir, "HEAD"))
 	exists := existsErr == nil
+	phase = "check_objects"
 	if exists && l.complete(ctx, roots, false) {
 		return true, nil
 	}
+	phase = "initialize_staging"
 	stage, err := os.MkdirTemp(l.store.Tmp, "hydrate-")
 	if err != nil {
 		return false, err
@@ -139,6 +161,7 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 		}
 	}
 	// Use previous roots for negotiation only if their dependency graph is intact.
+	phase = "negotiate"
 	if exists && l.complete(ctx, nil, true) {
 		objects := filepath.Join(l.Dir, "objects")
 		if err := os.WriteFile(filepath.Join(stage, "objects", "info", "alternates"), []byte(objects+"\n"), 0600); err != nil {
@@ -154,12 +177,16 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 			}
 		}
 	}
+	phase = "fetch_objects"
+	logging.Logger(ctx, g.Logger()).InfoContext(ctx, "cache hydration started", "cache_key", l.entry.key, "root_count", len(roots))
 	if err := l.runBounded(ctx, stage, func(ctx context.Context) error { return source(ctx, stage, roots) }); err != nil {
 		return false, err
 	}
+	phase = "verify_objects"
 	if err := g.Run(ctx, stage, strings.NewReader(strings.Join(roots, "\n")+"\n"), io.Discard, nil, "rev-list", "--objects", "--missing=error", "--quiet", "--stdin"); err != nil {
 		return false, err
 	}
+	phase = "publish_objects"
 	if err := l.publish(ctx, stage, roots, exists); err != nil {
 		return false, err
 	}

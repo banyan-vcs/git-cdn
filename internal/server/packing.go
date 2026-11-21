@@ -6,14 +6,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
@@ -78,6 +81,7 @@ func (s *Server) warmResponse(scope string, key []byte, stored *os.File, unpin f
 	if err != nil {
 		return fallback
 	}
+	fallback.size = info.Size()
 	registryKey := scope + "/" + hex.EncodeToString(key)
 	sub := s.fanouts.join(registryKey, stored.Name(), stored, func() { s.fanoutDetached.Add(1) })
 	if sub == nil {
@@ -190,23 +194,34 @@ func (s *Server) storedUnderLease(scope string, key []byte, lease *cache.Lease) 
 // generateLocal builds the request's ref view, runs upload-pack into a
 // bounded spool file and publishes the response-pack entry for cacheable
 // requests. It is the shared tail of the shared-lease and exclusive paths.
-func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, roots []string, data, key []byte) (*responseFile, error) {
+func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, roots []string, data, key []byte) (file *responseFile, err error) {
+	started := time.Now()
+	phase := "view"
+	defer func() {
+		if err != nil {
+			logging.Failure(ctx, s.logger, "local pack generation failed", err,
+				slog.String("phase", phase), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+		}
+	}()
 	view, err := lease.View(ctx, snapshot, roots)
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(view)
+	phase = "response_spool"
 	output, err := os.CreateTemp(s.store.Tmp, "response-")
 	if err != nil {
 		return nil, err
 	}
-	file := &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
+	file = &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
+	pending := file
 	failed := true
 	defer func() {
 		if failed {
-			file.Close()
+			pending.Close()
 		}
 	}()
+	phase = "upload_pack"
 	if err := s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view); err != nil {
 		return nil, err
 	}
@@ -214,8 +229,9 @@ func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot
 		return nil, err
 	}
 	if key != nil {
+		phase = "pack_store"
 		if stored, err := lease.StorePack(key, output.Name()); err != nil {
-			s.logger.Debug("response pack cache store failed", "error", err)
+			logging.Logger(ctx, s.logger).LogAttrs(ctx, slog.LevelDebug, "response pack cache store failed", logging.ErrorAttrs(err)...)
 		} else if stored {
 			s.packStores.Add(1)
 		}
@@ -287,10 +303,29 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 	return file, true, false
 }
 
-func (s *Server) prepareObjects(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (*responseFile, string, bool, error) {
+func (s *Server) prepareObjects(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (file *responseFile, status string, packHit bool, err error) {
+	started := time.Now()
+	phase := "pack_lookup"
 	ctx, cancel := context.WithTimeout(ctx, s.gitTimeout)
 	defer cancel()
 	scope := s.store.Key(identity)
+	defer func() {
+		attrs := []slog.Attr{slog.String("phase", phase), slog.String("cache_key", scope),
+			slog.Int("want_count", len(fetch.Wants)), slog.Int("have_count", len(fetch.Haves)), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		if err != nil {
+			logging.Failure(ctx, s.logger, "local fetch preparation failed", err, attrs...)
+			return
+		}
+		responseBytes := file.bytes
+		if file.persist {
+			responseBytes = file.size
+		}
+		if status == "HIT" {
+			logging.Logger(ctx, s.logger).DebugContext(ctx, "cache objects reused", "cache_key", scope, "root_count", len(fetch.Wants))
+		}
+		attrs = append(attrs, slog.String("cache_status", status), slog.Bool("pack_cache_hit", packHit), slog.Int64("response_bytes", responseBytes))
+		logging.Logger(ctx, s.logger).LogAttrs(ctx, slog.LevelInfo, "local fetch prepared", attrs...)
+	}()
 	key := s.packCacheKey(identity, fetch, data, snapshot)
 	if key != nil {
 		// Warm responses skip the repository gate entirely: pin the scope
@@ -310,7 +345,11 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	// cached, generation runs under a reader lease in parallel with other
 	// readers of the same scope. Storage refs catch up on a background
 	// writer instead of blocking the response.
+	phase = "shared_lease"
+	leaseStarted := time.Now()
 	if lease, err := s.store.AcquireShared(ctx, scope); err == nil {
+		logging.Logger(ctx, s.logger).DebugContext(ctx, "repository lease acquired", "queue_wait_ms", time.Since(leaseStarted).Milliseconds(), "cache_key", scope, "lease_mode", "shared")
+		phase = "shared_prepare"
 		if file, served, packHit := s.serveShared(ctx, lease, scope, key, fetch, snapshot, data); served {
 			lease.Release()
 			// Every locally served fetch carries a complete live snapshot
@@ -321,11 +360,14 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		}
 		lease.Release()
 	}
+	phase = "lease"
+	leaseStarted = time.Now()
 	lease, err := s.store.Acquire(ctx, scope)
 	if err != nil {
 		return nil, "", false, err
 	}
 	defer lease.Release()
+	logging.Logger(ctx, s.logger).DebugContext(ctx, "repository lease acquired", "queue_wait_ms", time.Since(leaseStarted).Milliseconds(), "cache_key", scope, "lease_mode", "exclusive")
 	if key != nil {
 		// Convert a stored hit's lease into a streaming pin: the response
 		// outlives the gate, but eviction cannot remove its scope mid-stream.
@@ -333,6 +375,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 			return file, "HIT", true, nil
 		}
 	}
+	phase = "hydrate"
 	roots := unique(fetch.Wants)
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.fetchTimeout)
 	hit, err := ensure(fetchCtx, lease, roots)
@@ -343,15 +386,18 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	if !hit {
 		s.hydrated.Add(1)
 	}
+	phase = "haves"
 	if !lease.AncestorsAll(ctx, unique(fetch.Haves), roots) {
 		return nil, "", false, errors.New("have is outside authorized roots")
 	}
 	if fetch.FullFetch() {
+		phase = "sync_refs"
 		if err := lease.SyncRefs(ctx, snapshot); err != nil {
 			return nil, "", false, err
 		}
 	}
 	if fetch.IncludeTag {
+		phase = "tags"
 		tags, err := tagRoots(ctx, lease, snapshot, fetch.Wants, len(roots))
 		if err != nil {
 			return nil, "", false, err
@@ -373,7 +419,8 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 			}
 		}
 	}
-	file, err := s.generateLocal(ctx, lease, snapshot, roots, data, key)
+	phase = "generate_local"
+	file, err = s.generateLocal(ctx, lease, snapshot, roots, data, key)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -381,7 +428,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	// snapshot, and the debounced call no-ops; partial and incremental
 	// generations schedule their prune through the background path.
 	s.store.Reconcile(scope, snapshot)
-	status := "MISS"
+	status = "MISS"
 	if hit {
 		status = "HIT"
 	}

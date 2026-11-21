@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -111,16 +112,27 @@ func (f *responseFile) Stat() (os.FileInfo, error) {
 
 func (f *responseFile) Write(p []byte) (int, error) {
 	if int64(len(p)) > f.limit-f.bytes {
-		return 0, errors.New("local response exceeds size limit")
+		return 0, responseLimitError{reason: "response_size_limit"}
 	}
 	if !f.budget.reserve(int64(len(p))) {
-		return 0, errors.New("temporary response budget exhausted")
+		return 0, responseLimitError{reason: "temporary_response_capacity"}
 	}
 	n, err := f.file.Write(p)
 	f.bytes += int64(n)
 	f.budget.release(int64(len(p) - n))
 	return n, err
 }
+
+type responseLimitError struct{ reason string }
+
+func (e responseLimitError) Error() string {
+	if e.reason == "response_size_limit" {
+		return "local response exceeds size limit"
+	}
+	return "temporary response budget exhausted"
+}
+
+func (e responseLimitError) LogKind() string { return e.reason }
 
 // Close holds the budget until the response file has been removed. Files
 // served from the response pack cache are shared and stay on disk; their
@@ -155,6 +167,8 @@ type idleResponseWriter struct {
 	controller *http.ResponseController
 	timeout    time.Duration
 	ctx        context.Context
+	status     atomic.Int32
+	bytes      atomic.Int64
 }
 
 func (w *idleResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -170,6 +184,9 @@ func (w *idleResponseWriter) refreshWriteDeadline() error {
 }
 
 func (w *idleResponseWriter) WriteHeader(status int) {
+	if status >= 200 || status == http.StatusSwitchingProtocols {
+		w.status.CompareAndSwap(0, int32(status))
+	}
 	_ = w.refreshWriteDeadline()
 	w.ResponseWriter.WriteHeader(status)
 }
@@ -178,13 +195,17 @@ func (w *idleResponseWriter) Write(p []byte) (int, error) {
 	if err := w.refreshWriteDeadline(); err != nil {
 		return 0, err
 	}
-	return w.ResponseWriter.Write(p)
+	w.status.CompareAndSwap(0, http.StatusOK)
+	n, err := w.ResponseWriter.Write(p)
+	w.bytes.Add(int64(n))
+	return n, err
 }
 
 func (w *idleResponseWriter) FlushError() error {
 	if err := w.refreshWriteDeadline(); err != nil {
 		return err
 	}
+	w.status.CompareAndSwap(0, http.StatusOK)
 	return w.controller.Flush()
 }
 

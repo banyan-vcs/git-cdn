@@ -110,6 +110,8 @@ func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackO
 		s.Close()
 		return nil, err
 	}
+	git.Logger().Info("cache store opened", "cache_bytes", s.usedBytes, "max_cache_bytes", s.maxBytes, "repository_count", len(s.entries),
+		"eviction_count", s.evictions, "evicted_bytes", s.evictedBytes)
 	if git != nil {
 		s.maintenance, s.cancel = context.WithCancel(context.Background())
 		s.repackQueue = make(chan string, 64)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 	"golang.org/x/crypto/ssh"
@@ -36,10 +38,19 @@ type originSession struct {
 	stop    chan struct{}
 }
 
-func (o *origin) open(ctx context.Context, password []byte, command gitCommand, version string) (*originSession, error) {
+func (o *origin) open(ctx context.Context, password []byte, command gitCommand, version string) (opened *originSession, err error) {
+	started := time.Now()
+	defer func() {
+		attrs := []slog.Attr{slog.String("upstream_host", o.settings.Address), slog.String("command", command.name), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		if err != nil {
+			logging.Failure(ctx, o.git.Logger(), "upstream SSH session failed", err, attrs...)
+		} else {
+			logging.Logger(ctx, o.git.Logger()).LogAttrs(ctx, slog.LevelDebug, "upstream SSH session opened", attrs...)
+		}
+	}()
 	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", o.settings.Address)
 	if err != nil {
-		return nil, fmt.Errorf("origin SSH connection failed")
+		return nil, &originError{message: "origin SSH connection failed", reason: "ssh_connect", cause: err}
 	}
 	stop := make(chan struct{})
 	go func() {
@@ -64,9 +75,9 @@ func (o *origin) open(ctx context.Context, password []byte, command gitCommand, 
 		close(stop)
 		conn.Close()
 		if errors.Is(err, errHostKeyCheck) {
-			return nil, fmt.Errorf("origin SSH host key check failed")
+			return nil, &originError{message: "origin SSH host key check failed", reason: "ssh_host_key", cause: err}
 		}
-		return nil, fmt.Errorf("origin SSH password authentication failed")
+		return nil, &originError{message: "origin SSH password authentication failed", reason: "ssh_authentication", cause: err}
 	}
 	conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(cc, chans, requests)
@@ -74,7 +85,7 @@ func (o *origin) open(ctx context.Context, password []byte, command gitCommand, 
 	if err != nil {
 		close(stop)
 		client.Close()
-		return nil, fmt.Errorf("origin SSH session failed")
+		return nil, &originError{message: "origin SSH session failed", reason: "ssh_session", cause: err}
 	}
 	if version != "" {
 		_ = session.Setenv("GIT_PROTOCOL", version)
@@ -104,10 +115,20 @@ func (o *origin) open(ctx context.Context, password []byte, command gitCommand, 
 	if err := session.Start(exec); err != nil {
 		close(stop)
 		client.Close()
-		return nil, fmt.Errorf("origin Git command rejected")
+		return nil, &originError{message: "origin Git command rejected", reason: "ssh_exec", cause: err}
 	}
 	return &originSession{client: client, session: session, in: in, out: out, err: stderr, stop: stop}, nil
 }
+
+type originError struct {
+	message string
+	reason  string
+	cause   error
+}
+
+func (e *originError) Error() string   { return e.message }
+func (e *originError) Unwrap() error   { return e.cause }
+func (e *originError) LogKind() string { return e.reason }
 
 // Prefer algorithms already trusted for this destination, as OpenSSH does.
 // Otherwise a multi-key server could negotiate a different, unpinned key.
@@ -153,7 +174,16 @@ func (s *originSession) close() {
 	s.client.Close()
 }
 
-func (o *origin) refs(ctx context.Context, password []byte, maxRefs int64) (protocol.Snapshot, error) {
+func (o *origin) refs(ctx context.Context, password []byte, maxRefs int64) (refs protocol.Snapshot, err error) {
+	started := time.Now()
+	defer func() {
+		attrs := []slog.Attr{slog.String("phase", "refs"), slog.Int("ref_count", len(refs.Refs)), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		if err != nil {
+			logging.Failure(ctx, o.git.Logger(), "upstream SSH refs failed", err, attrs...)
+		} else {
+			logging.Logger(ctx, o.git.Logger()).LogAttrs(ctx, slog.LevelInfo, "upstream SSH refs refreshed", attrs...)
+		}
+	}()
 	s, err := o.open(ctx, password, gitCommand{name: "git-upload-pack"}, "version=2")
 	if err != nil {
 		return protocol.Snapshot{}, err
@@ -172,7 +202,7 @@ func (o *origin) refs(ctx context.Context, password []byte, maxRefs int64) (prot
 	if err != nil {
 		return protocol.Snapshot{}, err
 	}
-	refs, err := protocol.ParseRefs(data)
+	refs, err = protocol.ParseRefs(data)
 	refs.ObservedAt = observed
 	return refs, err
 }
