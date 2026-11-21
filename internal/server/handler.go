@@ -30,6 +30,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now()
 	finish := func() {}
+	authCacheStatus := "NONE"
 	r = r.WithContext(logging.WithLogger(r.Context(), s.logger.With("transport", "http", "method", r.Method)))
 	defer func() {
 		defer func() { finish() }()
@@ -59,6 +60,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			attrs := []slog.Attr{slog.Int("status", status), slog.Int64("response_bytes", output.bytes.Load()),
 				slog.Int64("duration_ms", time.Since(started).Milliseconds()), slog.String("cache_status", cacheStatus), slog.Bool("panicked", panicked != nil)}
+			packStatus := output.Header().Get("X-GitCDN-Pack-Cache")
+			if packStatus == "" {
+				packStatus = "NONE"
+			}
+			attrs = append(attrs, slog.String("pack_cache_status", packStatus), slog.String("auth_cache_status", authCacheStatus))
 			attrs = append(attrs, logging.ErrorAttrs(requestErr)...)
 			logging.Logger(r.Context(), s.logger).LogAttrs(r.Context(), level, "repository request completed", attrs...)
 		}
@@ -144,6 +150,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot, response, authCached, err := s.probe(r, rt)
+	authCacheStatus = "LIVE"
+	if authCached {
+		authCacheStatus = "HIT"
+	}
 	if err != nil {
 		http.Error(w, "upstream refs probe failed", http.StatusBadGateway)
 		return
@@ -169,7 +179,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	file, status, packHit, err := s.prepare(r, rt, fetch, snapshot, data)
 	if err != nil {
 		if r.Context().Err() == nil {
-			s.logger.Debug("local response generation failed; falling back to upstream", "error", err)
+			logging.Logger(r.Context(), s.logger).LogAttrs(r.Context(), slog.LevelDebug, "local response generation failed; falling back to upstream", logging.ErrorAttrs(err)...)
 			s.proxy(w, r, rt, "local-unavailable")
 		}
 		return

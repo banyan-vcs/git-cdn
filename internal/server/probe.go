@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
@@ -91,7 +93,21 @@ func (s *Server) probeKey(rt route, headers [][2]string) string {
 // probes with the same repository and credential and reusing recent
 // successful probes when a lifetime is configured. The fourth return value
 // reports a lifetime-cache hit.
-func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Response, bool, error) {
+func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, response *http.Response, cached bool, err error) {
+	started := time.Now()
+	result := "LIVE"
+	defer func() {
+		attrs := []slog.Attr{slog.String("probe_result", result), slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+			slog.Int64("auth_cache_ttl_ms", s.probes.ttl.Milliseconds()), slog.Int("ref_count", len(snapshot.Refs))}
+		if response != nil {
+			attrs = append(attrs, slog.Int("status", response.StatusCode))
+		}
+		if err != nil {
+			logging.Failure(r.Context(), s.logger, "authorization probe failed", err, attrs...)
+		} else {
+			logging.Logger(r.Context(), s.logger).LogAttrs(r.Context(), slog.LevelDebug, "authorization probe completed", attrs...)
+		}
+	}()
 	key := s.probeKey(rt, s.headers(r))
 	now := time.Now()
 	c := &s.probes
@@ -104,6 +120,7 @@ func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Resp
 			} else {
 				c.mu.Unlock()
 				s.probeHits.Add(1)
+				result = "HIT"
 				return entry.snapshot, nil, true, nil
 			}
 		}
@@ -112,6 +129,7 @@ func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Resp
 	c.mu.Lock()
 	if flight, ok := c.flights[key]; ok {
 		c.mu.Unlock()
+		result = "MERGED"
 		select {
 		case <-flight.done:
 			s.probeMerged.Add(1)
@@ -134,9 +152,9 @@ func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Resp
 	}()
 	// The shared probe must not die with the leader's connection: waiters
 	// still need its result after the leader disconnects.
-	probeCtx, cancel := context.WithTimeout(context.Background(), s.authTimeout)
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.authTimeout)
 	defer cancel()
-	snapshot, response, err := s.discover(r.Clone(probeCtx), rt)
+	snapshot, response, err = s.discover(r.Clone(probeCtx), rt)
 	flight.snapshot, flight.err = snapshot, err
 	if response != nil {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, s.config.MaxRefsBytes+1))

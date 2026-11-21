@@ -328,6 +328,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 	output := &countingChannel{Channel: ch}
 	ch = output
 	cacheStatus := "NONE"
+	packCacheHit := false
 	defer func() {
 		level := slog.LevelInfo
 		if code != 0 {
@@ -337,7 +338,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 			level = slog.LevelDebug
 		}
 		logging.Logger(ctx, s.logger).Log(ctx, level, "SSH session completed", "upstream_user", o.user,
-			"cache_status", cacheStatus, "exit_status", code, "duration_ms", time.Since(started).Milliseconds(), "response_bytes", output.bytes)
+			"cache_status", cacheStatus, "pack_cache_hit", packCacheHit, "exit_status", code, "duration_ms", time.Since(started).Milliseconds(), "response_bytes", output.bytes)
 	}()
 	origin, err := o.open(ctx, password, command, version)
 	if err != nil {
@@ -402,7 +403,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 			}
 			return passthrough(data)
 		}
-		file, status, _, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
+		file, status, packHit, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
 			s.hydrations.Add(1)
 			return o.hydrate(ctx, password, stage, roots)
 		}))
@@ -411,6 +412,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		}
 		s.local.Add(1)
 		cacheStatus = status
+		packCacheHit = packHit
 		_, err = io.Copy(ch, file)
 		file.Close()
 		if err != nil {

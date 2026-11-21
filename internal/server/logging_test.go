@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -10,10 +11,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 type requestLogKey struct{}
@@ -35,9 +40,8 @@ func (b *eventBuffer) Write(p []byte) (int, error) {
 
 func TestRepositoryLogsTraceHydrationReuseAndBypass(t *testing.T) {
 	f := newFixture(t)
-	s, h := newCDN(t, f, nil)
 	var output eventBuffer
-	s.logger = slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	_, h := newCDNWithLogger(t, f, nil, slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	for i, body := range [][]byte{fetchBody(f.tip), fetchBody(f.tip), fetchBody(f.tip, "filter blob:none")} {
 		path := "/gitlab/Group/Repo.git/git-upload-pack"
 		if i == 2 {
@@ -70,10 +74,134 @@ func TestRepositoryLogsTraceHydrationReuseAndBypass(t *testing.T) {
 	require.Equal(t, "MISS", summaries[0]["cache_status"])
 	require.Equal(t, "HIT", summaries[1]["cache_status"])
 	require.Equal(t, "BYPASS", summaries[2]["cache_status"])
-	for _, message := range []string{"upstream refs refreshed", "cache objects hydrated", "cache objects reused", "local fetch prepared", "upstream passthrough completed"} {
+	require.Equal(t, "MISS", summaries[0]["pack_cache_status"])
+	require.Equal(t, "HIT", summaries[1]["pack_cache_status"])
+	require.Equal(t, "NONE", summaries[2]["pack_cache_status"])
+	require.Equal(t, "LIVE", summaries[1]["auth_cache_status"])
+	for _, message := range []string{"upstream refs refreshed", "cache objects hydrated", "cache objects reused", "local fetch prepared", "upstream passthrough completed", "local pack generated", "response pack stream selected", "authorization probe completed"} {
 		require.Contains(t, messages, message)
 	}
 	require.NotContains(t, output.String(), testAuthorization)
+}
+
+func TestAuthorizationProbeLogsLifetimeReuse(t *testing.T) {
+	f := newFixture(t)
+	var output eventBuffer
+	_, h := newCDNWithLogger(t, f, func(c *config.Config) { c.AuthProbeCacheTTL = "10s" }, slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	for range 2 {
+		responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil))
+	}
+	output.Lock()
+	defer output.Unlock()
+	var probes, summaries []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(output.Bytes()))
+	for decoder.More() {
+		var event map[string]any
+		require.NoError(t, decoder.Decode(&event))
+		switch event["msg"] {
+		case "authorization probe completed":
+			probes = append(probes, event)
+		case "repository request completed":
+			summaries = append(summaries, event)
+		}
+	}
+	require.Len(t, probes, 2)
+	require.Equal(t, "LIVE", probes[0]["probe_result"])
+	require.Equal(t, "HIT", probes[1]["probe_result"])
+	require.EqualValues(t, 10000, probes[1]["auth_cache_ttl_ms"])
+	require.Len(t, summaries, 2)
+	require.Equal(t, "HIT", summaries[1]["auth_cache_status"])
+	require.NotContains(t, output.String(), testAuthorization)
+}
+
+func TestDetachedProbeRetainsLoggerAndCorrelation(t *testing.T) {
+	f := newFixture(t)
+	s, _ := newCDN(t, f, nil)
+	var active atomic.Int64
+	var output eventBuffer
+	logger := slog.New(requestLogHandler{Handler: slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}), seen: func(ctx context.Context) {
+		require.Equal(t, "leader-42", ctx.Value(requestLogKey{}))
+		if ctx.Err() == nil {
+			active.Add(1)
+		}
+	}}).With("request_id", "leader-42")
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), requestLogKey{}, "leader-42"))
+	cancel()
+	r := httptest.NewRequest(http.MethodPost, "https://cdn.example/gitlab/Group/Repo.git/git-upload-pack", nil)
+	r.Header.Set("Authorization", testAuthorization)
+	r = r.WithContext(logging.WithLogger(ctx, logger))
+	rt, err := s.resolve(r)
+	require.NoError(t, err)
+	snapshot, response, cached, err := s.probe(r, rt)
+	require.NoError(t, err)
+	require.Nil(t, response)
+	require.False(t, cached)
+	require.NotEmpty(t, snapshot.Refs)
+	require.Positive(t, active.Load(), "detached upstream logger lost the live probe context")
+	require.Contains(t, output.String(), "upstream refs refreshed")
+	require.Contains(t, output.String(), `"request_id":"leader-42"`)
+	require.NotContains(t, output.String(), testAuthorization)
+}
+
+func TestResponseGenerationWaitLogsCompletionAndCancellation(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		name := "completed"
+		if canceled {
+			name = "canceled"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			var output eventBuffer
+			s, h := newCDNWithLogger(t, f, nil, slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil))
+			r := httptest.NewRequest(http.MethodPost, "https://cdn.example/gitlab/Group/Repo.git/git-upload-pack", nil)
+			r.Header.Set("Authorization", testAuthorization)
+			rt, err := s.resolve(r)
+			require.NoError(t, err)
+			snapshot, response, _, err := s.probe(r, rt)
+			require.NoError(t, err)
+			require.Nil(t, response)
+			data := fetchBody(f.tip, "deepen 1")
+			fetch, err := protocol.ParseFetch(data)
+			require.NoError(t, err)
+			identity := scopeIdentity(rt.base, rt.repo)
+			key := s.packCacheKey(identity, fetch, data, snapshot)
+			_, lead := s.flights.waitOrLead(s.store.Key(identity) + "/" + hex.EncodeToString(key))
+			require.NotNil(t, lead)
+			var release sync.Once
+			defer release.Do(lead)
+			ctx, cancel := context.WithCancel(r.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				file, _, _, err := s.prepare(r.WithContext(ctx), rt, fetch, snapshot, data)
+				if file != nil {
+					file.Close()
+				}
+				done <- err
+			}()
+			require.Eventually(t, func() bool { return s.flightWaits.Load() > 0 }, 5*time.Second, 10*time.Millisecond)
+			if canceled {
+				cancel()
+			} else {
+				release.Do(lead)
+			}
+			select {
+			case err := <-done:
+				if canceled {
+					require.ErrorIs(t, err, context.Canceled)
+				} else {
+					require.NoError(t, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("generation waiter did not finish")
+			}
+			output.Lock()
+			defer output.Unlock()
+			require.Contains(t, output.String(), "response pack generation wait "+name)
+			require.NotContains(t, output.String(), testAuthorization)
+		})
+	}
 }
 
 func (h requestLogHandler) Handle(ctx context.Context, r slog.Record) error {

@@ -75,7 +75,7 @@ func (s *Server) PrepareSSH(ctx context.Context, identity string, fetch protocol
 // subscriber that cannot keep up detaches and finishes from its own file
 // reads, and joining falls back to a private stream when no broadcast can
 // take the subscription.
-func (s *Server) warmResponse(scope string, key []byte, stored *os.File, unpin func()) *responseFile {
+func (s *Server) warmResponse(ctx context.Context, scope string, key []byte, stored *os.File, unpin func()) *responseFile {
 	fallback := &responseFile{file: stored, budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}
 	info, err := stored.Stat()
 	if err != nil {
@@ -83,11 +83,16 @@ func (s *Server) warmResponse(scope string, key []byte, stored *os.File, unpin f
 	}
 	fallback.size = info.Size()
 	registryKey := scope + "/" + hex.EncodeToString(key)
-	sub := s.fanouts.join(registryKey, stored.Name(), stored, func() { s.fanoutDetached.Add(1) })
+	sub := s.fanouts.join(registryKey, stored.Name(), stored, func() {
+		s.fanoutDetached.Add(1)
+		s.logger.Debug("response broadcast backpressure", "cache_key", scope, "reason", "subscriber_queue_full")
+	})
 	if sub == nil {
+		logging.Logger(ctx, s.logger).DebugContext(ctx, "response pack stream selected", "cache_key", scope, "stream_mode", "file", "response_bytes", info.Size())
 		return fallback
 	}
 	s.fanoutSubs.Add(1)
+	logging.Logger(ctx, s.logger).DebugContext(ctx, "response pack stream selected", "cache_key", scope, "stream_mode", "broadcast", "response_bytes", info.Size())
 	return &responseFile{stream: sub, size: info.Size(), budget: s.responses, limit: s.config.MaxResponseBytes, persist: true, unpin: unpin}
 }
 
@@ -183,10 +188,10 @@ func tagRoots(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapsho
 // storedUnderLease serves a stored response entry while a repository lease
 // is still held: the transfer outlives the gate, so the lease converts to
 // a streaming pin that keeps eviction away until the transfer ends.
-func (s *Server) storedUnderLease(scope string, key []byte, lease *cache.Lease) *responseFile {
+func (s *Server) storedUnderLease(ctx context.Context, scope string, key []byte, lease *cache.Lease) *responseFile {
 	if stored, err := lease.LookupPack(key); err == nil && stored != nil {
 		s.packHits.Add(1)
-		return s.warmResponse(scope, key, stored, s.store.Pin(scope))
+		return s.warmResponse(ctx, scope, key, stored, s.store.Pin(scope))
 	}
 	return nil
 }
@@ -194,13 +199,17 @@ func (s *Server) storedUnderLease(scope string, key []byte, lease *cache.Lease) 
 // generateLocal builds the request's ref view, runs upload-pack into a
 // bounded spool file and publishes the response-pack entry for cacheable
 // requests. It is the shared tail of the shared-lease and exclusive paths.
-func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, roots []string, data, key []byte) (file *responseFile, err error) {
+func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, scope string, snapshot protocol.Snapshot, roots []string, data, key []byte) (file *responseFile, err error) {
 	started := time.Now()
 	phase := "view"
+	packStore := "DISABLED"
 	defer func() {
 		if err != nil {
 			logging.Failure(ctx, s.logger, "local pack generation failed", err,
-				slog.String("phase", phase), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+				slog.String("cache_key", scope), slog.String("phase", phase), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+		} else {
+			logging.Logger(ctx, s.logger).InfoContext(ctx, "local pack generated", "cache_key", scope, "response_bytes", file.bytes,
+				"duration_ms", time.Since(started).Milliseconds(), "pack_store_result", packStore)
 		}
 	}()
 	view, err := lease.View(ctx, snapshot, roots)
@@ -230,9 +239,12 @@ func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot
 	}
 	if key != nil {
 		phase = "pack_store"
+		packStore = "SKIPPED"
 		if stored, err := lease.StorePack(key, output.Name()); err != nil {
+			packStore = "FAILED"
 			logging.Logger(ctx, s.logger).LogAttrs(ctx, slog.LevelDebug, "response pack cache store failed", logging.ErrorAttrs(err)...)
 		} else if stored {
+			packStore = "STORED"
 			s.packStores.Add(1)
 		}
 	}
@@ -248,7 +260,7 @@ func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot
 // response-pack hit.
 func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope string, key []byte, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, bool, bool) {
 	if key != nil {
-		if file := s.storedUnderLease(scope, key, lease); file != nil {
+		if file := s.storedUnderLease(ctx, scope, key, lease); file != nil {
 			return file, true, true
 		}
 	}
@@ -277,26 +289,30 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 		done, lead := s.flights.waitOrLead(scope + "/" + hex.EncodeToString(key))
 		if lead == nil {
 			s.flightWaits.Add(1)
+			started := time.Now()
 			select {
 			case <-done:
+				logging.Logger(ctx, s.logger).DebugContext(ctx, "response pack generation wait completed", "cache_key", scope, "queue_wait_ms", time.Since(started).Milliseconds())
 			case <-ctx.Done():
+				logging.Failure(ctx, s.logger, "response pack generation wait canceled", ctx.Err(), slog.String("cache_key", scope), slog.Int64("queue_wait_ms", time.Since(started).Milliseconds()))
 				return nil, false, false
 			}
-			if file := s.storedUnderLease(scope, key, lease); file != nil {
+			if file := s.storedUnderLease(ctx, scope, key, lease); file != nil {
 				return file, true, true
 			}
 			// The leader failed; this reader generates without a new flight.
+			logging.Logger(ctx, s.logger).DebugContext(ctx, "response pack generation retried", "cache_key", scope, "reason", "entry_unavailable_after_wait")
 		} else {
 			// A leader may have published between the entry lookup above
 			// and this registration.
-			if file := s.storedUnderLease(scope, key, lease); file != nil {
+			if file := s.storedUnderLease(ctx, scope, key, lease); file != nil {
 				lead()
 				return file, true, true
 			}
 			defer lead()
 		}
 	}
-	file, err := s.generateLocal(ctx, lease, snapshot, roots, data, key)
+	file, err := s.generateLocal(ctx, lease, scope, snapshot, roots, data, key)
 	if err != nil {
 		return nil, false, false
 	}
@@ -336,7 +352,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		if unpin := s.store.Pin(scope); unpin != nil {
 			if stored, err := s.store.LookupPack(scope, key); err == nil && stored != nil {
 				s.packHits.Add(1)
-				return s.warmResponse(scope, key, stored, unpin), "HIT", true, nil
+				return s.warmResponse(ctx, scope, key, stored, unpin), "HIT", true, nil
 			}
 			unpin()
 		}
@@ -371,7 +387,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	if key != nil {
 		// Convert a stored hit's lease into a streaming pin: the response
 		// outlives the gate, but eviction cannot remove its scope mid-stream.
-		if file := s.storedUnderLease(scope, key, lease); file != nil {
+		if file := s.storedUnderLease(ctx, scope, key, lease); file != nil {
 			return file, "HIT", true, nil
 		}
 	}
@@ -420,7 +436,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		}
 	}
 	phase = "generate_local"
-	file, err = s.generateLocal(ctx, lease, snapshot, roots, data, key)
+	file, err = s.generateLocal(ctx, lease, scope, snapshot, roots, data, key)
 	if err != nil {
 		return nil, "", false, err
 	}
