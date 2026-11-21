@@ -1,12 +1,16 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 )
 
 // The response pack cache stores complete upload-pack responses verbatim,
@@ -62,16 +66,21 @@ func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.forgetPack(scope, hexed)
+			s.Git.Logger().Debug("response pack cache entry missing", "cache_key", scope)
+		} else {
+			logging.Failure(context.Background(), s.Git.Logger(), "response pack cache lookup failed", err, slog.String("cache_key", scope))
 		}
 		return nil, nil
 	}
 	if info.Size() != size {
+		s.Git.Logger().Warn("response pack cache entry invalidated", "cache_key", scope, "reason", "size_mismatch", "expected_bytes", size, "actual_bytes", info.Size())
 		_ = os.Remove(path)
 		s.forgetPack(scope, hexed)
 		return nil, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
+		logging.Failure(context.Background(), s.Git.Logger(), "response pack cache lookup failed", err, slog.String("cache_key", scope))
 		return nil, nil
 	}
 	return file, nil
@@ -206,13 +215,20 @@ func (l *Lease) prunePacks(dir string, limit int64) {
 		}
 		return a.ModTime().Before(b.ModTime())
 	})
+	var evicted, evictedBytes int64
 	for _, p := range packs {
 		if total <= limit {
 			break
 		}
 		if err := os.Remove(p.path); err == nil {
 			total -= p.size
+			evicted++
+			evictedBytes += p.size
 		}
+	}
+	if evicted > 0 {
+		l.store.Git.Logger().Info("response pack cache pruned", "cache_key", l.entry.key, "entries_evicted", evicted,
+			"evicted_bytes", evictedBytes, "remaining_bytes", total, "max_pack_cache_bytes", limit)
 	}
 }
 

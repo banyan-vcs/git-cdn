@@ -171,12 +171,16 @@ func (f *fixture) commit(t *testing.T, content string) {
 }
 
 func newCDN(t *testing.T, f *fixture, modify func(*config.Config)) (*Server, *httptest.Server) {
+	return newCDNWithLogger(t, f, modify, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newCDNWithLogger(t *testing.T, f *fixture, modify func(*config.Config), logger *slog.Logger) (*Server, *httptest.Server) {
 	t.Helper()
 	c := config.Config{CacheDir: t.TempDir(), AllowSharedCredentialHost: true, Upstreams: map[string]config.Upstream{"gitlab": {URL: f.origin.URL + "/root"}}}
 	if modify != nil {
 		modify(&c)
 	}
-	s, err := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(c, logger)
 	require.NoError(t, err)
 	h := httptest.NewServer(s)
 	t.Cleanup(func() { h.Close(); s.Close() })

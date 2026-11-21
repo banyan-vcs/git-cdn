@@ -26,9 +26,9 @@ type reconcileSetup struct {
 // reconcileFixture builds a store with a two-commit file origin, hydrates
 // the first tip and releases the lease, leaving an idle scope whose next
 // hydration target is the second tip.
-func reconcileFixture(t *testing.T) reconcileSetup {
+func reconcileFixture(t *testing.T, options ...nativegit.Option) reconcileSetup {
 	t.Helper()
-	g, err := nativegit.New("git", 4)
+	g, err := nativegit.New("git", 4, options...)
 	require.NoError(t, err)
 	s, err := Open(t.TempDir(), g, 64<<20, RepackOptions{PackThreshold: 32, Timeout: 30 * time.Second})
 	require.NoError(t, err)

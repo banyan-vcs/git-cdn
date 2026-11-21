@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
@@ -291,6 +292,8 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 			if hold := reconcileHold; hold != nil {
 				hold()
 			}
+			ctx = logging.WithLogger(ctx, s.Git.Logger().With("operation", "reconcile"))
+			logging.Logger(ctx, s.Git.Logger()).DebugContext(ctx, "cache reconciliation started", "cache_key", key, "attempt", attempt+1)
 			err := lease.SyncRefs(ctx, snapshot)
 			preempted := ctx.Err() == context.Canceled
 			cancel()

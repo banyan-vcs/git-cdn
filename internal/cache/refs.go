@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
@@ -21,7 +23,24 @@ func upstreamRef(name string) string {
 // SyncRefs consumes the unprefixed, fresh upstream snapshot. Only complete
 // objects already cached are retained; uncached branches are never hydrated by
 // reconciliation. Storage refs remain separate from every client's ref view.
-func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error {
+func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) (err error) {
+	started := time.Now()
+	changed := false
+	retired := 0
+	ctx = logging.WithLogger(ctx, logging.Logger(ctx, l.store.Git.Logger()).With("cache_key", l.entry.key))
+	defer func() {
+		attrs := []slog.Attr{slog.Int("ref_count", len(snapshot.Refs)),
+			slog.Bool("changed", changed), slog.Int("roots_retired", retired), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		if err != nil {
+			logging.Failure(ctx, l.store.Git.Logger(), "cache refs reconciliation failed", err, attrs...)
+		} else {
+			level := slog.LevelDebug
+			if changed {
+				level = slog.LevelInfo
+			}
+			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, level, "cache refs reconciled", attrs...)
+		}
+	}()
 	if !snapshot.ObservedAt.IsZero() && snapshot.ObservedAt.Before(l.entry.refsObservedAt) {
 		return nil
 	}
@@ -90,7 +109,6 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	}
 	// Roots leaving the advertised set retire into the grace period; the
 	// count feeds the retirement metric.
-	var retired int
 	retained, err := readRetention(l.Dir)
 	if err != nil {
 		return err
@@ -207,6 +225,7 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) error 
 	}
 	l.entry.refsObservedAt = snapshot.ObservedAt
 	l.recordReconcile(snapshot, retired)
+	changed = true
 	return nil
 }
 

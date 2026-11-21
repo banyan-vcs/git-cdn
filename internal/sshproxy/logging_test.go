@@ -124,6 +124,8 @@ func TestSSHSessionLoggingAndContexts(t *testing.T) {
 	}
 	require.Equal(t, "MISS", summaries[0]["cache_status"])
 	require.Equal(t, "HIT", summaries[1]["cache_status"])
+	require.Equal(t, false, summaries[0]["pack_cache_hit"])
+	require.Equal(t, true, summaries[1]["pack_cache_hit"])
 	require.Equal(t, "BYPASS", summaries[2]["cache_status"])
 	require.Equal(t, "NONE", summaries[3]["cache_status"])
 	require.Equal(t, "WARN", summaries[3]["level"])
