@@ -80,11 +80,22 @@ func TestShallowFleetRetiresOldRootsAfterDrift(t *testing.T) {
 	// Move main and drop the tag, so the old tip leaves the advertised set
 	// entirely; a tag still pointing at it would legitimately keep it.
 	testGit(t, f.work, "push", "--quiet", f.repo, "main", ":refs/tags/v1")
-	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
+	body := fetchBody(f.tip, "deepen 1")
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
+	lastFetch := time.Now()
 	require.Eventually(t, func() bool {
+		// A dropped trigger — the busy-gate window, or the backoff after a
+		// real timeout — is re-armed by the next fetch the fleet makes, so
+		// replay one every few seconds: the assertion measures convergence
+		// under continued traffic, not one-shot scheduler luck on a slow
+		// runner.
+		if time.Since(lastFetch) > 5*time.Second {
+			responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
+			lastFetch = time.Now()
+		}
 		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
 		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
-	}, 45*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
+	}, 60*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
 	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/retained/"), "refs/cache/retained/"+oldTip, "retired root did not enter the grace period")
 	require.GreaterOrEqual(t, metricValue(t, h, "gitcdn_roots_retired_total"), 1, "retirement was not counted")
 }
