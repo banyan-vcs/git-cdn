@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 const retentionFile = ".gc-retained"

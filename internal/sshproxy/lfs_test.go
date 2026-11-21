@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
 	"github.com/stretchr/testify/require"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )

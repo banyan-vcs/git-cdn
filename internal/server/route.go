@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 )
 
 type route struct {

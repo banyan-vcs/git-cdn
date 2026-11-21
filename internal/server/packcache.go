@@ -3,7 +3,7 @@ package server
 import (
 	"crypto/sha256"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 // packCacheKey derives the verbatim response key for a request. Only

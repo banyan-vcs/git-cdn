@@ -24,7 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/scripts/internal/testutil"
+	"gitlab.com/banyan-vcs/git-cdn/scripts/internal/testutil"
 )
 
 type options struct {

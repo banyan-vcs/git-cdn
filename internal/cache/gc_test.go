@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
 	"github.com/stretchr/testify/require"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 func orphanBlob(t *testing.T, l *Lease, data string, modified time.Time) string {

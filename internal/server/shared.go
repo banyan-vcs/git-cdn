@@ -1,6 +1,6 @@
 package server
 
-import "github.com/chiyutianyi/git-cdn/internal/nativegit"
+import "gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 
 // NativeGit shares the process budget with SSH hydration and pack generation.
 func (s *Server) NativeGit() *nativegit.Runner { return s.git }

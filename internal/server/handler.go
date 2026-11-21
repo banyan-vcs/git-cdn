@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

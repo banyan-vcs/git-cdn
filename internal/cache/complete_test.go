@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 
 	"github.com/stretchr/testify/require"
 )

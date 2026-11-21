@@ -12,9 +12,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chiyutianyi/git-cdn/internal/cache"
-	"github.com/chiyutianyi/git-cdn/internal/config"
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 func unique(values []string) []string {

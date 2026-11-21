@@ -12,11 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/cache"
-	"github.com/chiyutianyi/git-cdn/internal/config"
-	"github.com/chiyutianyi/git-cdn/internal/nativegit"
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
-	"github.com/chiyutianyi/git-cdn/internal/server"
+	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/server"
 	"golang.org/x/crypto/ssh"
 )
 

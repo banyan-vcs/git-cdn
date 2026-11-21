@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
-	"github.com/chiyutianyi/git-cdn/internal/server"
-	"github.com/chiyutianyi/git-cdn/internal/sshproxy"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/server"
+	"gitlab.com/banyan-vcs/git-cdn/internal/sshproxy"
 )
 
 func main() {
