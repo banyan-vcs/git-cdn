@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,19 +22,29 @@ var ErrCapacity = errors.New("repository cache capacity unavailable")
 // starve them. changed is closed and recreated whenever the state moves;
 // waiters select on it alongside their context.
 type entry struct {
-	key            string
-	readers        int
-	writers        int
-	writer         bool
-	changed        chan struct{}
-	cancelMaint    context.CancelFunc
-	packMu         sync.Mutex
-	users          int
-	size           int64
-	accessed       time.Time
+	key         string
+	readers     int
+	writers     int
+	writer      bool
+	changed     chan struct{}
+	cancelMaint context.CancelFunc
+	packMu      sync.Mutex
+	users       int
+	size        int64
+	accessed    time.Time
+	// accessFlushed is the last persisted .access stamp; recency writes
+	// are throttled to accessFlushInterval because LRU needs seconds-level
+	// granularity, not one disk write per request. accessDirty marks a
+	// suppressed flush so Close persists the final ordering.
+	accessFlushed  time.Time
+	accessDirty    bool
 	repackPending  bool
 	refsObservedAt time.Time
 	lastGC         time.Time
+	// packs indexes the response-pack cache (key hex -> published size) so
+	// warm lookups Stat one file instead of scanning the directory. It is
+	// guarded by Store.mu and rebuilt at startup.
+	packs map[string]int64
 }
 
 func newEntry(key string) *entry {
@@ -167,10 +179,44 @@ func (s *Store) loadEntries() error {
 		if err != nil {
 			return err
 		}
-		s.entries[key] = &entry{key: key, changed: make(chan struct{}), size: size, accessed: info.ModTime(), lastGC: lastGC}
+		s.entries[key] = &entry{key: key, changed: make(chan struct{}), size: size, accessed: info.ModTime(), accessFlushed: info.ModTime(), lastGC: lastGC, packs: scanPackIndex(filepath.Join(path, "packcache"))}
 		s.usedBytes += size
 	}
 	return nil
+}
+
+// accessFlushInterval bounds persisted recency-stamp writes: within one,
+// releases only update the in-memory timestamp. LRU decisions use
+// in-memory recency; the stamp only orders cold scopes after a restart.
+const accessFlushInterval = 30 * time.Second
+
+// scanPackIndex rebuilds the response-pack index from published entry
+// names (<key hex>-<size>). Staging leftovers were swept before this runs.
+func scanPackIndex(dir string) map[string]int64 {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var index map[string]int64
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) == ".staging" {
+			continue
+		}
+		dash := strings.LastIndexByte(name, '-')
+		if dash <= 0 {
+			continue
+		}
+		size, err := strconv.ParseInt(name[dash+1:], 10, 64)
+		if err != nil || size <= 0 {
+			continue
+		}
+		if index == nil {
+			index = make(map[string]int64)
+		}
+		index[name[:dash]] = size
+	}
+	return index
 }
 
 func ensureDirectory(path string) error {

@@ -70,7 +70,7 @@ Persistent repository scopes use LRU with capacity reservations and restartable 
 
 The per-scope gate is a reader/writer lock. Hydration, ref reconciliation and maintenance hold it exclusively; validation, ref views and local pack generation run under shared reader leases, so warm incremental fetches of one repository proceed in parallel while writers wait, and waiting writers in turn block fresh readers to prevent starvation. Response-pack hits bypass the gate entirely: they pin the scope against eviction, stream the stored file and release the pin when the transfer ends. Storage-ref reconciliation for shared responses happens on a background writer instead of the response path; store shutdown joins in-flight reconciliation, so no git child outlives the cache directory. A queued request cancels long maintenance on its scope; maintenance retries on its next pass. A global limit controls all native Git processes, including metadata commands.
 
-Capacity accounting and eviction currently perform filesystem work under the store mutex. Future improvements should move expensive deletion out of the global critical section and avoid rescanning unchanged scopes on every writer release.
+Capacity accounting keeps filesystem work off the global critical section: writer releases rescan their scope's size while still holding its exclusive gate, before taking the store mutex to apply the delta, and recency stamps persist outside the mutex at a throttled interval (shutdown flushes suppressed stamps so a clean restart keeps last-touch ordering). Eviction deletion still runs under the store mutex; moving it out remains future work.
 
 ## Response delivery and performance
 

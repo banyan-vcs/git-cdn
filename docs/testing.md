@@ -26,6 +26,8 @@ Authorization-probe tests cover concurrent probes with the same repository and c
 
 Partial-clone tests cover shallow and filtered fetches serving locally with verbatim reuse, batch `--depth=1` fleets collapsing to one generation under the shared-lease flight, real `git clone --depth=1` and `--filter=blob:none` round-trips including lazy blob reads, and shallow traffic never running full-fetch ref reconciliation. Response-broadcast tests cover concurrent identical hits sharing one stored read byte for byte, slow consumers detaching to their own file reads without divergence, and a low-memory stress workload serving a concurrent mixed batch under a tight soft memory limit.
 
+Hot-path tests pin the concurrency envelope: concurrent warm requests stay in the latency ballpark of sequential ones instead of serializing, warm hits allocate less than the response size per request (block buffers come from the registry free list), the response-pack index survives restarts, self-heals truncated or stale entries, and recency stamps throttle with a shutdown flush that preserves last-touch ordering.
+
 GC tests use controlled object mtimes and collection cutoffs without sleeping for the retention window. They verify expiry beyond 14 days, recent cruft surviving geometric repack, retained history at day 13 and expiry after day 14, queued leases preventing collection below the pack threshold, and budget failures retaining objects.
 
 The Go live harness also has an offline integration test. It exercises all clone, update, mixed concurrency, cold-cache and replay scenarios using a temporary local origin and six clients:

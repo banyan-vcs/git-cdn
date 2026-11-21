@@ -134,6 +134,24 @@ func (s *Store) Close() error {
 		// goroutine: their git children are killed by the cancel above and
 		// waited for, so no writes land in the cache directory afterwards.
 		s.workers.Wait()
+		// Persist suppressed recency stamps so a clean shutdown leaves the
+		// true last-touch ordering for the next start.
+		type stamp struct {
+			key string
+			at  time.Time
+		}
+		var due []stamp
+		s.mu.Lock()
+		for _, e := range s.entries {
+			if e.accessDirty && e.size > 0 {
+				e.accessDirty = false
+				due = append(due, stamp{key: e.key, at: e.accessed})
+			}
+		}
+		s.mu.Unlock()
+		for _, item := range due {
+			s.flushAccess(filepath.Join(s.Root, "repos", item.key), item.at, true)
+		}
 		s.closeErr = s.lock.Close()
 	})
 	return s.closeErr
@@ -287,44 +305,70 @@ func (s *Store) Pin(key string) func() {
 		s.mu.Lock()
 		e.users--
 		e.accessed = time.Now()
-		if e.size > 0 {
-			access := filepath.Join(s.Root, "repos", e.key, ".access")
-			if err := os.WriteFile(access, nil, 0600); err == nil {
-				_ = os.Chtimes(access, e.accessed, e.accessed)
-			}
-		}
+		at := e.accessed
+		flush := e.claimAccessFlushLocked(at)
 		if e.users == 0 && e.size == 0 {
 			delete(s.entries, e.key)
 			_ = os.Remove(filepath.Join(s.Root, "repos", e.key))
 		}
 		s.mu.Unlock()
+		s.flushAccess(filepath.Join(s.Root, "repos", e.key), at, flush)
+	}
+}
+
+// claimAccessFlushLocked reports whether the persisted recency stamp is
+// due and reserves the flush so concurrent releases do not duplicate it.
+// A suppressed flush marks the entry dirty: within a process LRU uses the
+// in-memory timestamp, and Close persists dirty stamps so a clean restart
+// still sees the true last-touch ordering. Caller holds Store.mu.
+func (e *entry) claimAccessFlushLocked(now time.Time) bool {
+	if e.size <= 0 {
+		return false
+	}
+	if now.Sub(e.accessFlushed) < accessFlushInterval {
+		e.accessDirty = true
+		return false
+	}
+	e.accessFlushed = now
+	e.accessDirty = false
+	return true
+}
+
+// flushAccess persists a recency stamp outside the store mutex: the file
+// is last-writer-wins per scope, and holding the global lock across disk
+// writes serialized every concurrent response.
+func (s *Store) flushAccess(dir string, at time.Time, due bool) {
+	if !due {
+		return
+	}
+	access := filepath.Join(dir, ".access")
+	if err := os.WriteFile(access, nil, 0600); err == nil {
+		_ = os.Chtimes(access, at, at)
 	}
 }
 
 func (l *Lease) release(schedule bool) {
 	s := l.store
-	s.mu.Lock()
 	e := l.entry
-	e.accessed = time.Now()
-	if l.shared {
-		// Readers never mutate the repository: refresh recency without
-		// rescanning unchanged bytes.
-		if e.size > 0 {
-			access := filepath.Join(filepath.Dir(l.Dir), ".access")
-			if err := os.WriteFile(access, nil, 0600); err == nil {
-				_ = os.Chtimes(access, e.accessed, e.accessed)
-			}
-		}
-	} else if size, err := directorySize(filepath.Dir(l.Dir)); err == nil {
-		s.usedBytes += size - e.size
-		e.size = size
-		if e.size > 0 {
-			access := filepath.Join(filepath.Dir(l.Dir), ".access")
-			if err := os.WriteFile(access, nil, 0600); err == nil {
-				_ = os.Chtimes(access, e.accessed, e.accessed)
-			}
+	now := time.Now()
+	// Writers rescan the scope size while still holding its exclusive
+	// gate, before taking the global mutex: the walk no longer blocks
+	// every other scope's gate operations. Readers skip the rescan.
+	size, haveSize := int64(0), false
+	if !l.shared {
+		if scanned, err := directorySize(filepath.Dir(l.Dir)); err == nil {
+			size, haveSize = scanned, true
 		}
 	}
+	s.mu.Lock()
+	e.accessed = now
+	if haveSize {
+		s.usedBytes += size - e.size
+		e.size = size
+	}
+	// Claim after the size update: a writer's first release publishes the
+	// scope size, and that release must also stamp recency.
+	flush := e.claimAccessFlushLocked(now)
 	e.dropGate(l.shared)
 	e.signalGate()
 	e.users--
@@ -338,4 +382,5 @@ func (l *Lease) release(schedule bool) {
 		s.queueRepackLocked(e)
 	}
 	s.mu.Unlock()
+	s.flushAccess(filepath.Dir(l.Dir), now, flush)
 }

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -38,42 +37,54 @@ func packName(key []byte, size int64) string {
 // file with a nil error means the key is absent; the caller streams the
 // file and closes it. No repository lease is required: racing eviction is
 // safe because callers pin the scope, and an opened file streams even
-// after its directory disappears.
+// after its directory disappears. The in-memory index turns the hot path
+// into one Stat; a mismatch (truncation, tampering, external removal)
+// drops the index entry and the file so the next request regenerates.
 func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
 	if s.PackCacheBytes() <= 0 || len(key) != 32 || !validKey(scope) {
 		return nil, nil
 	}
+	hexed := fmt.Sprintf("%x", key)
+	s.mu.Lock()
+	e := s.entries[scope]
+	if e == nil || e.packs == nil {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	size, ok := e.packs[hexed]
+	s.mu.Unlock()
+	if !ok {
+		return nil, nil
+	}
 	dir := s.packDir(scope)
-	prefix := fmt.Sprintf("%x-", key)
-	entries, err := os.ReadDir(dir)
+	path := filepath.Join(dir, packName(key, size))
+	info, err := os.Stat(path)
 	if err != nil {
-		return nil, nil // unreadable entries are treated as absent
+		if os.IsNotExist(err) {
+			s.forgetPack(scope, hexed)
+		}
+		return nil, nil
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || strings.HasSuffix(name, ".staging") || !strings.HasPrefix(name, prefix) {
-			continue
-		}
-		size, err := strconv.ParseInt(strings.TrimPrefix(name, prefix), 10, 64)
-		if err != nil || size <= 0 {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.Size() != size {
-			_ = os.Remove(path)
-			return nil, nil
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, nil
-		}
-		return file, nil
+	if info.Size() != size {
+		_ = os.Remove(path)
+		s.forgetPack(scope, hexed)
+		return nil, nil
 	}
-	return nil, nil
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil
+	}
+	return file, nil
+}
+
+// forgetPack drops an index entry whose file no longer matches. Caller has
+// released mu; the map write re-acquires it.
+func (s *Store) forgetPack(scope, hexed string) {
+	s.mu.Lock()
+	if e := s.entries[scope]; e != nil && e.packs != nil {
+		delete(e.packs, hexed)
+	}
+	s.mu.Unlock()
 }
 
 // LookupPack opens a stored response for key under the lease's scope.
@@ -135,6 +146,25 @@ func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 		_ = os.Remove(staging)
 		return false, err
 	}
+	// Drop a stale entry from an earlier generation with the same key and
+	// a different size, so the index and the directory keep exactly one
+	// file per response key.
+	hexed := fmt.Sprintf("%x", key)
+	if published, err := os.ReadDir(dir); err == nil {
+		prefix := hexed + "-"
+		for _, stale := range published {
+			name := stale.Name()
+			if name != filepath.Base(target) && strings.HasPrefix(name, prefix) {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+		}
+	}
+	l.store.mu.Lock()
+	if l.entry.packs == nil {
+		l.entry.packs = make(map[string]int64)
+	}
+	l.entry.packs[hexed] = info.Size()
+	l.store.mu.Unlock()
 	l.prunePacks(dir, limit)
 	return true, nil
 }

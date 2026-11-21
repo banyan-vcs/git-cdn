@@ -152,3 +152,61 @@ func TestShallowBatchMeasurement(t *testing.T) {
 	on := measure("shallow batch pack-cache on", 0)
 	t.Logf("shallow batch ratio %.2fx", float64(off)/float64(on))
 }
+
+// BenchmarkWarmHitServe measures the steady-state warm hit: pin, indexed
+// lookup, broadcast stream and unpin, with no generation. Run with
+// go test -bench BenchmarkWarmHitServe -benchmem.
+func BenchmarkWarmHitServe(b *testing.B) {
+	t := &testing.T{}
+	f := newFixture(t)
+	random := rand.New(rand.NewSource(42))
+	blob := make([]byte, 64<<10)
+	for i := range 40 {
+		random.Read(blob)
+		require.NoError(b, os.WriteFile(filepath.Join(f.work, "data.bin"), blob, 0600))
+		f.commit(t, "bulk "+string(rune('a'+i%26)))
+	}
+	testGit(t, f.work, "push", "--quiet", f.repo, "main")
+	_, h := newCDN(t, f, nil)
+	body := fetchBody(f.tip)
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
+	b.ResetTimer()
+	for range b.N {
+		responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
+	}
+}
+
+// TestWarmLatencyByConcurrency reports per-request latency as concurrency
+// rises on one warm entry: the spread exposes serialization on the hot
+// path. It is a measurement, not a gate: run with GIT_CDN_PACK_BENCH=1.
+func TestWarmLatencyByConcurrency(t *testing.T) {
+	if os.Getenv("GIT_CDN_PACK_BENCH") == "" {
+		t.Skip("set GIT_CDN_PACK_BENCH=1 to measure warm latency curves")
+	}
+	f := bigFixture(t, 1<<20)
+	_, h := newCDN(t, f, nil)
+	body := fetchBody(f.tip)
+	reference, _ := drain(t, h.URL, body)
+	for _, workers := range []int{1, 4, 16, 64} {
+		elapsed := make([]time.Duration, workers)
+		var wg sync.WaitGroup
+		for i := range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				digest, took := drain(t, h.URL, body)
+				require.Equal(t, reference, digest)
+				elapsed[i] = took
+			}()
+		}
+		wg.Wait()
+		var total, worst time.Duration
+		for _, d := range elapsed {
+			total += d
+			if d > worst {
+				worst = d
+			}
+		}
+		t.Logf("concurrency %2d: mean %v worst %v", workers, total/time.Duration(workers), worst)
+	}
+}

@@ -4,7 +4,7 @@
 
 `max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/` repositories, including packs, indexes, refs and repository metadata. Authorized users share the same repository objects; one cache directory shares that budget across sites and repositories.
 
-Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Active and queued leases pin their entry, including while staging reads its objects through alternates. Validation and pack generation hold shared reader leases: warm serving of one repository runs in parallel, hydration and maintenance hold the writer side, and waiting writers block fresh readers. Streams served from the response pack cache pin their scope without any lease and release the pin — refreshing recency — when the transfer ends, so an in-flight response cannot lose its scope mid-stream. A candidate whose removal fails is skipped and reported without aborting admission for the remaining candidates.
+Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Recency writes are throttled to one persisted stamp per scope per 30 seconds — in-memory recency always advances, a suppressed flush marks the scope dirty, and shutdown persists dirty stamps so a clean restart keeps the true last-touch ordering; after a crash the ordering is only as fresh as the last stamp. Active and queued leases pin their entry, including while staging reads its objects through alternates. Validation and pack generation hold shared reader leases: warm serving of one repository runs in parallel, hydration and maintenance hold the writer side, and waiting writers block fresh readers. Streams served from the response pack cache pin their scope without any lease and release the pin — refreshing recency — when the transfer ends, so an in-flight response cannot lose its scope mid-stream. A candidate whose removal fails is skipped and reported without aborting admission for the remaining candidates.
 
 LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough.
 
@@ -53,10 +53,15 @@ file without consulting repository objects, hydration or upload-pack; the
 per-request upstream authorization probe is unchanged. Entry bytes count
 toward the scope size and the persistent budget, and per-scope retention
 is bounded by `max_pack_cache_bytes` (oldest first, oversized responses
-never stored). Concurrent identical requests collapse to one generation
-per entry — on a warm scope a shared-lease flight serializes the
-upload-pack run — and warm hits may share one read of the entry through a
-bounded in-memory broadcast whose slow consumers fall back to their own
+never stored). An in-memory index maps each entry to its published size,
+so a warm lookup validates one file instead of scanning the directory;
+the index is rebuilt at startup, publication removes stale same-key
+files, and a mismatched or missing file drops out of the index and the
+directory so the next request regenerates. Concurrent identical requests
+collapse to one generation per entry — on a warm scope a shared-lease
+flight serializes the upload-pack run — and warm hits share one read of
+the entry through a bounded in-memory broadcast whose block buffers come
+from a fixed free list and whose slow consumers fall back to their own
 file reads. Startup also sweeps staging leftovers of interrupted
 publications under the directory lock. See
 [Configuration](configuration.md#response-pack-cache).

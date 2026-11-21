@@ -13,9 +13,11 @@ import (
 // distributes shared blocks to subscriber queues, so a fleet of identical
 // requests costs one disk read instead of one per response. Memory is hard
 // bounded: every block holds one slot of a fixed semaphore (fanoutPoolBlocks
-// x fanoutBlockSize), and a subscriber whose bounded queue is full detaches
-// and finishes by reading the stored file itself from its own offset, which
-// also keeps detached transfers correct when the pump ends first.
+// x fanoutBlockSize), block buffers come from a bounded free list and are
+// reused across streams instead of reallocated per block, and a subscriber
+// whose bounded queue is full detaches and finishes by reading the stored
+// file itself from its own offset, which also keeps detached transfers
+// correct when the pump ends first.
 const (
 	fanoutBlockSize  = 64 << 10
 	fanoutQueueDepth = 2
@@ -26,6 +28,7 @@ type fanoutRegistry struct {
 	mu       sync.Mutex
 	active   map[string]*fanout
 	slots    chan struct{}
+	pool     chan []byte
 	shutdown chan struct{}
 	workers  sync.WaitGroup
 }
@@ -33,6 +36,7 @@ type fanoutRegistry struct {
 func (r *fanoutRegistry) init() {
 	r.active = make(map[string]*fanout)
 	r.slots = make(chan struct{}, fanoutPoolBlocks)
+	r.pool = make(chan []byte, fanoutPoolBlocks)
 	r.shutdown = make(chan struct{})
 }
 
@@ -59,10 +63,10 @@ func (r *fanoutRegistry) isShutdown() bool {
 	}
 }
 
-// fanoutBlock is one shared slice of response bytes. The final holder of the
-// reference count releases the pool slot; terminal EOF is not a block — the
-// pump detaches every subscriber instead, and their fallback reads find the
-// file's own end.
+// fanoutBlock is one shared slice of response bytes backed by a pooled
+// buffer. The final holder of the reference count recycles the buffer and
+// releases the slot; terminal EOF is not a block — the pump detaches every
+// subscriber instead, and their fallback reads find the file's own end.
 type fanoutBlock struct {
 	data []byte
 	refs int32
@@ -72,7 +76,17 @@ type fanoutBlock struct {
 func (b *fanoutBlock) share() { atomic.AddInt32(&b.refs, 1) }
 func (b *fanoutBlock) release() {
 	if atomic.AddInt32(&b.refs, -1) == 0 {
+		b.reg.recycle(b.data)
 		<-b.reg.slots
+	}
+}
+
+// recycle returns a buffer to the free list; a full list hands it to the
+// collector instead of blocking.
+func (r *fanoutRegistry) recycle(buf []byte) {
+	select {
+	case r.pool <- buf[:cap(buf)]:
+	default:
 	}
 }
 
@@ -154,7 +168,6 @@ func (f *fanout) attach() *fanoutSub {
 func (f *fanout) pump() {
 	defer f.reg.workers.Done()
 	defer f.finish()
-	buf := make([]byte, fanoutBlockSize)
 	for {
 		if f.reg.isShutdown() {
 			return
@@ -165,9 +178,17 @@ func (f *fanout) pump() {
 		if empty {
 			return
 		}
+		buf := f.acquire()
+		if buf == nil {
+			return
+		}
 		n, err := f.file.Read(buf)
 		if n > 0 {
+			// Ownership of the pooled buffer moves to the block.
 			f.deliver(buf[:n])
+		} else {
+			f.reg.recycle(buf)
+			<-f.reg.slots
 		}
 		if err != nil {
 			return
@@ -175,19 +196,30 @@ func (f *fanout) pump() {
 	}
 }
 
+// acquire reserves a block slot and returns a buffer to read into, or nil
+// when the registry is shutting down.
+func (f *fanout) acquire() []byte {
+	select {
+	case f.reg.slots <- struct{}{}:
+	case <-f.reg.shutdown:
+		return nil
+	}
+	select {
+	case buf := <-f.reg.pool:
+		return buf[:fanoutBlockSize]
+	default:
+		return make([]byte, fanoutBlockSize)
+	}
+}
+
 // deliver shares one read block with every subscriber. A full queue detaches
 // the subscriber: it finishes from its own file reads, and its queued blocks
 // keep their reference counts until consumed or closed.
 func (f *fanout) deliver(data []byte) {
-	select {
-	case f.reg.slots <- struct{}{}:
-	case <-f.reg.shutdown:
-		return
-	}
 	// The pump's own reference keeps the slot held until every subscriber
 	// that took the block has finished with it (and returns it immediately
 	// when none did).
-	block := &fanoutBlock{data: append([]byte(nil), data...), refs: 1, reg: f.reg}
+	block := &fanoutBlock{data: data, refs: 1, reg: f.reg}
 	f.mu.Lock()
 	f.sent += int64(len(data))
 	for sub := range f.subs {
