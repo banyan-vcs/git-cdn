@@ -2,6 +2,12 @@
 
 Git CDN can terminate SSH and authenticate to a configured Git SSH origin using the client's password. A password can be a regular password or an opaque token accepted by that origin. The CDN does not interpret JWT claims, mint platform tokens or read the client's token file.
 
+## Logging and embedding
+
+The command passes its standard `slog.Logger` to the SSH frontend. Each validated exec emits a completion summary containing repository, command, upstream user, cache status, exit status, duration and stdout byte count. Handshake failures use debug diagnostics. Passwords, packet bodies and origin stderr are never included. A byte count covers protocol output, not only pack bytes; `NONE` means no fetch response path was selected.
+
+Embedded users can pass `WithLogger`, `WithConnContext` and `WithSessionContext` options to `sshproxy.New`. Connection context enrichment runs before the handshake; session enrichment runs for each validated exec and receives `SessionInfo`, without passwords or packet data. Callbacks may run concurrently and must derive from the supplied context to preserve deadlines and cancellation; a nil result keeps the original context. Logger handlers can then associate sessions with application-specific request IDs without adding logging backend dependencies to Git CDN.
+
 This mode applies to Git hosts that accept reusable SSH password credentials. Standard public-key signatures cannot be replayed; key-only services need delegation or a separate signing design. A PAT accepted over HTTPS is not automatically an SSH password. The selected SSH endpoint, port and credential issuer must support the requested mode.
 
 ## Configure and run

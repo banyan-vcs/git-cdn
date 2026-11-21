@@ -65,6 +65,10 @@ func newSSHFixture(t *testing.T, configure ...func(*config.Config)) *sshFixture 
 }
 
 func newSSHFixtureWithLFS(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32, configure ...func(*config.Config)) *sshFixture {
+	return newSSHFixtureOptions(t, lfs, nil, configure...)
+}
+
+func newSSHFixtureOptions(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32, options []Option, configure ...func(*config.Config)) *sshFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &sshFixture{work: filepath.Join(root, "work"), repo: filepath.Join(root, "origin.git"), lfs: lfs}
@@ -171,7 +175,7 @@ func newSSHFixtureWithLFS(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32
 	require.NoError(t, c.Validate())
 	backend, err := server.New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	f.server, err = New(c, backend)
+	f.server, err = New(c, backend, options...)
 	require.NoError(t, err)
 	cdn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

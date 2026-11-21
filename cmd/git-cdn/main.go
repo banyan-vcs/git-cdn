@@ -40,7 +40,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if c.SSH != nil {
-		sshServer, err := sshproxy.New(c, handler)
+		sshServer, err := sshproxy.New(c, handler, sshproxy.WithLogger(logger))
 		if err != nil {
 			return err
 		}

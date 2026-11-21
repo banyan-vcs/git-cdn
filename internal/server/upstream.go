@@ -101,7 +101,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, rt route, reason 
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			s.logger.Warn("upstream proxy failed", "upstream", rt.id, "reason", reason)
+			s.logger.WarnContext(r.Context(), "upstream proxy failed", "upstream", rt.id, "reason", reason)
 			http.Error(w, "upstream proxy failed", http.StatusBadGateway)
 		},
 	}

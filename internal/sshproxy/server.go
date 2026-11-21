@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -34,9 +35,12 @@ type Server struct {
 	closed                       bool
 	workers                      sync.WaitGroup
 	local, forwarded, hydrations atomic.Uint64
+	logger                       *slog.Logger
+	connContext                  func(context.Context, net.Conn) context.Context
+	sessionContext               func(context.Context, SessionInfo) context.Context
 }
 
-func New(c config.Config, backend *server.Server) (*Server, error) {
+func New(c config.Config, backend *server.Server, options ...Option) (*Server, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -55,7 +59,11 @@ func New(c config.Config, backend *server.Server) (*Server, error) {
 		return nil, fmt.Errorf("invalid SSH host key")
 	}
 	g := backend.NativeGit()
-	return &Server{cfg: c, backend: backend, git: g, signer: signer, slots: make(chan struct{}, c.SSH.MaxConnections), connections: map[net.Conn]bool{}}, nil
+	s := &Server{cfg: c, backend: backend, git: g, signer: signer, slots: make(chan struct{}, c.SSH.MaxConnections), connections: map[net.Conn]bool{}, logger: slog.Default()}
+	for _, option := range options {
+		option(s)
+	}
+	return s, nil
 }
 
 func (s *Server) Stats() (uint64, uint64, uint64) {
@@ -107,6 +115,12 @@ func (s *Server) handle(conn net.Conn) {
 		<-s.slots
 		s.workers.Done()
 	}()
+	base := context.Background()
+	if s.connContext != nil {
+		if enriched := s.connContext(base, conn); enriched != nil {
+			base = enriched
+		}
+	}
 	idleTimeout, _ := time.ParseDuration(s.cfg.WriteIdleTimeout)
 	transport := &idleConn{Conn: conn, timeout: idleTimeout}
 	var password []byte
@@ -132,12 +146,13 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	client, channels, requests, err := ssh.NewServerConn(transport, sshConfig)
 	if err != nil {
+		s.logger.DebugContext(base, "SSH handshake failed", "reason", "handshake")
 		return
 	}
 	defer client.Close()
 	defer func() { clear(password) }()
 	timeout, _ := time.ParseDuration(s.cfg.RequestTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	transport.enabled.Store(true)
 	watchDone := make(chan struct{})
@@ -284,6 +299,12 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 				request.Reply(false, nil)
 				return
 			}
+			if s.sessionContext != nil {
+				info := SessionInfo{User: user, Command: command.name, Repository: command.repo, Operation: command.operation}
+				if enriched := s.sessionContext(ctx, info); enriched != nil {
+					ctx = enriched
+				}
+			}
 			o, err := s.route(user, command.repo)
 			if err != nil {
 				request.Reply(false, nil)
@@ -300,7 +321,22 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 	}
 }
 
-func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, password []byte, command gitCommand, version string) uint32 {
+func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, password []byte, command gitCommand, version string) (code uint32) {
+	started := time.Now()
+	output := &countingChannel{Channel: ch}
+	ch = output
+	cacheStatus := "NONE"
+	defer func() {
+		level := slog.LevelInfo
+		if code != 0 {
+			level = slog.LevelWarn
+		}
+		if ctx.Err() != nil {
+			level = slog.LevelDebug
+		}
+		s.logger.Log(ctx, level, "SSH session completed", "upstream_user", o.user, "repository", command.repo, "command", command.name,
+			"cache_status", cacheStatus, "exit_status", code, "duration_ms", time.Since(started).Milliseconds(), "response_bytes", output.bytes)
+	}()
 	origin, err := o.open(ctx, password, command, version)
 	if err != nil {
 		io.WriteString(ch.Stderr(), err.Error()+"\n")
@@ -309,8 +345,12 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 	stderrDone := make(chan struct{})
 	go func() { io.Copy(ch.Stderr(), origin.err); close(stderrDone) }()
 	defer func() { origin.close(); <-stderrDone }()
+	passthrough := func(input []byte) uint32 {
+		cacheStatus = "BYPASS"
+		return s.proxy(ch, origin, input, nil)
+	}
 	if command.name != "git-upload-pack" || !protocol.IsV2(version) {
-		return s.proxy(ch, origin, nil, nil)
+		return passthrough(nil)
 	}
 	advertisement, err := readMessage(origin.out, s.cfg.MaxRefsBytes)
 	if err != nil {
@@ -320,7 +360,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		return 1
 	}
 	if !bytes.Contains(advertisement, []byte("version 2\n")) {
-		return s.proxy(ch, origin, nil, nil)
+		return passthrough(nil)
 	}
 	for {
 		data, err := readBoundedMessage(ch, s.cfg.MaxRequestBytes, protocol.MaxCommandPackets)
@@ -348,24 +388,24 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 			continue
 		}
 		if fetch.Command != "fetch" || !fetch.Supported || !fetch.Done || len(fetch.Wants) == 0 {
-			return s.proxy(ch, origin, data, nil)
+			return passthrough(data)
 		}
 		probeTimeout, _ := time.ParseDuration(s.cfg.UpstreamTimeout)
 		probeCtx, probeCancel := context.WithTimeout(ctx, probeTimeout)
 		refs, err := o.refs(probeCtx, password, s.cfg.MaxRefsBytes)
 		probeCancel()
 		if err != nil || !refs.Allows(fetch.Wants) {
-			return s.proxy(ch, origin, data, nil)
+			return passthrough(data)
 		}
-		file, status, packHit, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
+		file, status, _, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
 			s.hydrations.Add(1)
 			return o.hydrate(ctx, password, stage, roots)
 		}))
 		if err != nil {
-			return s.proxy(ch, origin, data, nil)
+			return passthrough(data)
 		}
 		s.local.Add(1)
-		_, _ = status, packHit
+		cacheStatus = status
 		_, err = io.Copy(ch, file)
 		file.Close()
 		if err != nil {
@@ -375,6 +415,17 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		// waits for this EOF before finishing its pack/index operation.
 		return 0
 	}
+}
+
+type countingChannel struct {
+	ssh.Channel
+	bytes int64
+}
+
+func (c *countingChannel) Write(p []byte) (int, error) {
+	n, err := c.Channel.Write(p)
+	c.bytes += int64(n)
+	return n, err
 }
 
 func (s *Server) proxy(ch ssh.Channel, source *originSession, input, output []byte) uint32 {
