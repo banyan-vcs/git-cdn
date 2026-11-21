@@ -236,13 +236,15 @@ func TestSSHCloneWarmReuseAndLazyUpdate(t *testing.T) {
 	require.EqualValues(t, 2, hydrations)
 }
 
-func TestSSHShallowPassthroughAndRevocation(t *testing.T) {
+func TestSSHShallowCloneAndRevocation(t *testing.T) {
 	f := newSSHFixture(t)
 	shallow := filepath.Join(t.TempDir(), "shallow")
 	f.git(t, "", "clone", "--quiet", "--depth", "1", f.base, shallow)
 	require.Equal(t, "true", gitFixture(t, shallow, "rev-parse", "--is-shallow-repository"))
-	_, forwarded, _ := f.server.Stats()
-	require.Greater(t, forwarded, uint64(0))
+	// Shallow fetches serve locally and enter the response pack cache;
+	// only a revoked credential must still fail below.
+	local, _, _ := f.server.Stats()
+	require.Greater(t, local, uint64(0), "shallow clone did not serve locally")
 	f.denied.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

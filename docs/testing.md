@@ -72,4 +72,4 @@ For a performance study:
 
 Put run data in ignored artifacts or an external benchmark report. Durable documentation should retain the methodology and acceptance criteria, not dated service IDs, PIDs, machine paths, fixed commit hashes or a single project's timings.
 
-SSH integration tests use a local password-authenticated SSH Git origin and standard Git/OpenSSH clients. They cover ordinary/warm clones, origin updates and subsequent cache hydration, shallow passthrough, access revocation and rejected paths. See [SSH requirements](ssh.md).
+SSH integration tests use a local password-authenticated SSH Git origin and standard Git/OpenSSH clients. They cover ordinary/warm clones, origin updates and subsequent cache hydration, shallow clones serving locally, access revocation and rejected paths. See [SSH requirements](ssh.md).
