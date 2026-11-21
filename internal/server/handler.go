@@ -3,15 +3,18 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
@@ -25,6 +28,44 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"status":"ok"}`)
 		return
 	}
+	started := time.Now()
+	finish := func() {}
+	r = r.WithContext(logging.WithLogger(r.Context(), s.logger.With("transport", "http", "method", r.Method)))
+	defer func() {
+		defer func() { finish() }()
+		panicked := recover()
+		if r.URL.Path != "/metrics" {
+			status := int(output.status.Load())
+			if status == 0 {
+				status = http.StatusOK
+				if panicked != nil {
+					status = http.StatusInternalServerError
+				}
+			}
+			level := slog.LevelInfo
+			if status >= 500 || panicked != nil {
+				level = slog.LevelWarn
+			}
+			var requestErr error
+			if output.ctx != nil {
+				requestErr = output.ctx.Err()
+				if errors.Is(requestErr, context.Canceled) {
+					level = slog.LevelDebug
+				}
+			}
+			cacheStatus := output.Header().Get("X-GitCDN-Cache-Status")
+			if cacheStatus == "" {
+				cacheStatus = "NONE"
+			}
+			attrs := []slog.Attr{slog.Int("status", status), slog.Int64("response_bytes", output.bytes.Load()),
+				slog.Int64("duration_ms", time.Since(started).Milliseconds()), slog.String("cache_status", cacheStatus), slog.Bool("panicked", panicked != nil)}
+			attrs = append(attrs, logging.ErrorAttrs(requestErr)...)
+			logging.Logger(r.Context(), s.logger).LogAttrs(r.Context(), level, "repository request completed", attrs...)
+		}
+		if panicked != nil {
+			panic(panicked)
+		}
+	}()
 	if !s.secureRequest(r) {
 		http.Error(w, "HTTPS or a trusted TLS proxy is required", http.StatusForbidden)
 		return
@@ -51,13 +92,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.requests.release()
-	r, finish := output.requestDeadline(r, s.requestTimeout)
-	defer finish()
+	r, finish = output.requestDeadline(r, s.requestTimeout)
 	rt, err := s.resolve(r)
 	if err != nil {
+		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "route"))
 		http.Error(w, "invalid upstream or repository route", http.StatusBadRequest)
 		return
 	}
+	r = r.WithContext(logging.WithLogger(r.Context(), s.logger.With("transport", "http", "method", r.Method,
+		"upstream", rt.id, "upstream_host", rt.base.Host, "repository", rt.repo, "endpoint", rt.endpoint)))
 	if !s.credentialHostMatches(r, rt) {
 		http.Error(w, "credentials are not accepted for this upstream on this host", http.StatusMisdirectedRequest)
 		return
@@ -68,6 +111,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.config.MaxRequestBytes))
 	if err != nil {
+		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "request_body"))
 		http.Error(w, "request body exceeds limit or cannot be read", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -80,11 +124,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := decodeBody(raw, r.Header.Get("Content-Encoding"), s.config.MaxRequestBytes)
 	if err != nil {
+		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "decode_body"))
 		http.Error(w, "invalid or oversized encoded request", http.StatusBadRequest)
 		return
 	}
 	fetch, err := protocol.ParseFetch(data)
 	if err != nil {
+		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "parse_fetch"))
 		http.Error(w, "invalid Git packet framing", http.StatusBadRequest)
 		return
 	}
@@ -99,7 +145,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, response, authCached, err := s.probe(r, rt)
 	if err != nil {
-		s.logger.WarnContext(r.Context(), "upstream refs probe failed", "upstream", rt.id)
 		http.Error(w, "upstream refs probe failed", http.StatusBadGateway)
 		return
 	}
@@ -132,6 +177,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
+		logging.Failure(r.Context(), s.logger, "local response unavailable", err, slog.String("phase", "response_stat"))
 		s.proxy(w, r, rt, "local-unavailable")
 		return
 	}
@@ -155,7 +201,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	s.local.Add(1)
 	if _, err := io.Copy(w, file); err != nil {
-		s.logger.DebugContext(r.Context(), "client transfer interrupted", "upstream", rt.id)
+		logging.Logger(r.Context(), s.logger).LogAttrs(r.Context(), slog.LevelDebug, "client transfer interrupted", logging.ErrorAttrs(err)...)
 	}
 }
 

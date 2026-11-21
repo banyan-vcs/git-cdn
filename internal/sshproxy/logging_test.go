@@ -39,8 +39,28 @@ func (h *summaryHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.ids = append(h.ids, id)
 	return nil
 }
-func (h *summaryHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *summaryHandler) WithGroup(string) slog.Handler      { return h }
+func (h *summaryHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return summaryScoped{parent: h, attrs: attrs}
+}
+func (h *summaryHandler) WithGroup(string) slog.Handler { return h }
+
+type summaryScoped struct {
+	parent *summaryHandler
+	attrs  []slog.Attr
+}
+
+func (h summaryScoped) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.parent.Enabled(ctx, level)
+}
+func (h summaryScoped) Handle(ctx context.Context, r slog.Record) error {
+	r = r.Clone()
+	r.AddAttrs(h.attrs...)
+	return h.parent.Handle(ctx, r)
+}
+func (h summaryScoped) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return summaryScoped{parent: h.parent, attrs: append(append([]slog.Attr(nil), h.attrs...), attrs...)}
+}
+func (h summaryScoped) WithGroup(string) slog.Handler { return h }
 
 func TestSSHSessionLoggingAndContexts(t *testing.T) {
 	capture := &summaryHandler{}
@@ -65,7 +85,7 @@ func TestSSHSessionLoggingAndContexts(t *testing.T) {
 	for i := range 2 {
 		f.git(t, "", "clone", "--quiet", f.base, filepath.Join(t.TempDir(), "clone", string(rune('a'+i))))
 	}
-	f.git(t, "", "clone", "--quiet", "--depth=1", f.base, filepath.Join(t.TempDir(), "shallow"))
+	f.git(t, "", "-c", "protocol.version=1", "clone", "--quiet", "--depth=1", f.base, filepath.Join(t.TempDir(), "shallow"))
 	f.denied.Store(true)
 	u, err := url.Parse(f.base)
 	require.NoError(t, err)
@@ -83,10 +103,18 @@ func TestSSHSessionLoggingAndContexts(t *testing.T) {
 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	require.Len(t, capture.entries, 4)
+	var summaries []map[string]any
+	var ids []int64
 	for i, entry := range capture.entries {
+		if entry["msg"] == "SSH session completed" {
+			summaries = append(summaries, entry)
+			ids = append(ids, capture.ids[i])
+		}
+	}
+	require.Len(t, summaries, 4)
+	for i, entry := range summaries {
 		require.Equal(t, "SSH session completed", entry["msg"])
-		require.Equal(t, int64(i+1), capture.ids[i])
+		require.Equal(t, int64(i+1), ids[i])
 		require.Equal(t, "Group/Repo.git", entry["repository"])
 		require.Equal(t, "git-upload-pack", entry["command"])
 		if i < 3 {
@@ -94,11 +122,11 @@ func TestSSHSessionLoggingAndContexts(t *testing.T) {
 			require.Greater(t, entry["response_bytes"].(int64), int64(0))
 		}
 	}
-	require.Equal(t, "MISS", capture.entries[0]["cache_status"])
-	require.Equal(t, "HIT", capture.entries[1]["cache_status"])
-	require.Equal(t, "BYPASS", capture.entries[2]["cache_status"])
-	require.Equal(t, "NONE", capture.entries[3]["cache_status"])
-	require.Equal(t, "WARN", capture.entries[3]["level"])
+	require.Equal(t, "MISS", summaries[0]["cache_status"])
+	require.Equal(t, "HIT", summaries[1]["cache_status"])
+	require.Equal(t, "BYPASS", summaries[2]["cache_status"])
+	require.Equal(t, "NONE", summaries[3]["cache_status"])
+	require.Equal(t, "WARN", summaries[3]["level"])
 	encoded, err := json.Marshal(capture.entries)
 	require.NoError(t, err)
 	require.False(t, bytes.Contains(encoded, []byte("fixture-token")), "password leaked into logs")
@@ -118,8 +146,14 @@ func TestNilSSHContextCallbacksKeepContext(t *testing.T) {
 	f.git(t, "", "ls-remote", f.base)
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	require.Len(t, capture.entries, 1)
-	require.Equal(t, "SSH session completed", capture.entries[0]["msg"])
-	require.True(t, capture.entries[0]["has_deadline"].(bool), "nil callback lost the request deadline")
-	require.False(t, strings.Contains(capture.entries[0]["msg"].(string), "fixture-token"))
+	var summaries []map[string]any
+	for _, entry := range capture.entries {
+		if entry["msg"] == "SSH session completed" {
+			summaries = append(summaries, entry)
+		}
+	}
+	require.Len(t, summaries, 1)
+	require.Equal(t, "SSH session completed", summaries[0]["msg"])
+	require.True(t, summaries[0]["has_deadline"].(bool), "nil callback lost the request deadline")
+	require.False(t, strings.Contains(summaries[0]["msg"].(string), "fixture-token"))
 }
