@@ -36,6 +36,7 @@ type Store struct {
 	workers       sync.WaitGroup
 	closeOnce     sync.Once
 	closeErr      error
+	closed        bool
 	repacks       uint64
 	repackFailed  uint64
 	repackSkipped uint64
@@ -121,9 +122,17 @@ func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackO
 
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
+		// Flag closure under mu so a Reconcile racing this Close either
+		// registers in workers before the Wait below or returns at once.
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
 		if s.cancel != nil {
 			s.cancel()
 		}
+		// Join the maintenance worker and every in-flight reconciliation
+		// goroutine: their git children are killed by the cancel above and
+		// waited for, so no writes land in the cache directory afterwards.
 		s.workers.Wait()
 		s.closeErr = s.lock.Close()
 	})
@@ -213,9 +222,16 @@ func (s *Store) acquire(ctx context.Context, key string, shared bool) (*Lease, e
 	return &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e, shared: shared}, nil
 }
 
+// reconcileHold is a test seam that pauses a reconciliation goroutine after
+// it takes its lease, so tests can observe Close joining it deterministically.
+var reconcileHold func()
+
 // Reconcile refreshes the scope's storage refs to snapshot on a background
 // exclusive lease. It never blocks or fails the caller; reconciliation
-// catches up on the next writer when the lease or the store is gone.
+// catches up on the next writer when the lease or the store is gone. The
+// goroutine joins the store's workers, so Close waits for a reconciliation
+// still holding its lease instead of racing its writes with removal of the
+// cache directory.
 func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 	if s.Git == nil || s.maintenance == nil {
 		return
@@ -223,11 +239,14 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 	s.mu.Lock()
 	e := s.entries[key]
 	known := e != nil && e.size > 0
-	s.mu.Unlock()
-	if !known {
+	if !known || s.closed {
+		s.mu.Unlock()
 		return
 	}
+	s.workers.Add(1)
+	s.mu.Unlock()
 	go func() {
+		defer s.workers.Done()
 		ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
 		defer cancel()
 		lease, err := s.Acquire(ctx, key)
@@ -235,6 +254,9 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 			return
 		}
 		defer lease.Release()
+		if hold := reconcileHold; hold != nil {
+			hold()
+		}
 		_ = lease.SyncRefs(ctx, snapshot)
 	}()
 }

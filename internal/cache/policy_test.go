@@ -52,6 +52,58 @@ func TestReconcileIgnoresUnknownScope(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "reconciliation created a scope directory")
 }
 
+// A reconciliation that already holds its lease can still be running git
+// against the scope directory. Close must join it instead of returning while
+// its writes can race a caller removing the cache root; a Reconcile racing
+// Close must also not corrupt the worker count.
+func TestCloseJoinsInFlightReconcile(t *testing.T) {
+	g, err := nativegit.New("git", 1)
+	require.NoError(t, err)
+	s, err := Open(t.TempDir(), g, 1<<20)
+	require.NoError(t, err)
+
+	key := s.Key("scope")
+	s.mu.Lock()
+	e := newEntry(key)
+	e.size = 1
+	s.entries[key] = e
+	s.mu.Unlock()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	reconcileHold = func() { close(entered); <-release }
+	t.Cleanup(func() {
+		reconcileHold = nil
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		s.Close()
+	})
+
+	s.Reconcile(key, protocol.Snapshot{ObservedAt: time.Now()})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciliation never reached its lease")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while a reconciliation was in flight: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not join the in-flight reconciliation")
+	}
+}
+
 func TestRestartRemovesOrphanedTemporaryFiles(t *testing.T) {
 	root := t.TempDir()
 	s, err := Open(root, nil, 1024)
