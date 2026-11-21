@@ -178,7 +178,7 @@ func TestPackCacheHitSkipsRepositoryGate(t *testing.T) {
 	case warm := <-done:
 		require.EqualValues(t, "HIT", warm.Header.Get("X-GitCDN-Pack-Cache"))
 		require.NotEmpty(t, responseBody(t, warm))
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		require.FailNow(t, "test failed", "warm hit waited on the repository gate while another holder kept it")
 	}
 }

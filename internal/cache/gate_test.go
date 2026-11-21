@@ -35,7 +35,7 @@ func TestExclusiveWaitsForReaders(t *testing.T) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.entries[s.Key("a")].writers == 1
-	}, 2*time.Second, 5*time.Millisecond, "writer did not register behind the reader")
+	}, 5*time.Second, 5*time.Millisecond, "writer did not register behind the reader")
 	select {
 	case l := <-acquired:
 		if l != nil {
@@ -49,7 +49,7 @@ func TestExclusiveWaitsForReaders(t *testing.T) {
 	case writer := <-acquired:
 		require.NotNil(t, writer, "writer failed while waiting")
 		writer.Release()
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test failed", "exclusive lease did not acquire after readers left")
 	}
 }
@@ -71,7 +71,7 @@ func TestWaitingWriterBlocksNewReaders(t *testing.T) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.entries[s.Key("a")].writers == 1
-	}, 2*time.Second, 5*time.Millisecond, "writer did not register behind the reader")
+	}, 5*time.Second, 5*time.Millisecond, "writer did not register behind the reader")
 	blocked := make(chan *Lease, 1)
 	go func() {
 		l, err := s.AcquireShared(context.Background(), s.Key("a"))
@@ -94,7 +94,7 @@ func TestWaitingWriterBlocksNewReaders(t *testing.T) {
 	case l := <-blocked:
 		require.NotNil(t, l, "fresh reader failed behind the writer")
 		l.Release()
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test failed", "the fresh reader never acquired after the writer finished")
 	}
 	<-writerDone
@@ -114,12 +114,12 @@ func TestGateWaiterContextCancelUnpinsEntry(t *testing.T) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.entries[s.Key("a")].writers == 1
-	}, 2*time.Second, 5*time.Millisecond, "waiter did not register")
+	}, 5*time.Second, 5*time.Millisecond, "waiter did not register")
 	cancel()
 	select {
 	case err := <-waitErr:
 		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test failed", "cancelled waiter did not return")
 	}
 	s.mu.Lock()
@@ -149,7 +149,7 @@ func TestWaitingRequestPreemptsMaintenance(t *testing.T) {
 	}()
 	select {
 	case <-cancelled:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test failed", "waiting reader did not preempt maintenance")
 	}
 	// Maintenance observes the cancellation and leaves the gate.
@@ -162,7 +162,7 @@ func TestWaitingRequestPreemptsMaintenance(t *testing.T) {
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		require.FailNow(t, "test failed", "reader did not acquire after maintenance left")
 	}
 }

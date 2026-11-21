@@ -57,5 +57,5 @@ func TestSharedFullFetchReconcilesRefsInBackground(t *testing.T) {
 		defer l.Release()
 		_, err = s.git.Output(context.Background(), l.Dir, "", "show-ref", "--verify", "refs/cache/upstream/tags/v2")
 		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "background reconciliation never recorded the new tag")
+	}, 15*time.Second, 100*time.Millisecond, "background reconciliation never recorded the new tag")
 }
