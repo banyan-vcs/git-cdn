@@ -27,7 +27,7 @@
     --accent: #fcd854;
     --accent-ink: #fde17b;
     --on-accent: #14140f;
-    --accent-soft: #2d280c;
+    --accent-soft: #1d1d20;
     --flow: #a1a1aa;
     --hit: #edede8;
     --code-bg: #0a0a0b;
@@ -95,7 +95,7 @@ p.lede {
   max-width: 46em;
 }
 a {
-  color: var(--accent);
+  color: var(--ink);
   text-decoration: none;
 }
 a:hover {
@@ -172,7 +172,7 @@ nav.main a:hover {
 }
 .lang b {
   padding: 0 6px;
-  color: var(--accent);
+  color: var(--ink);
 }
 /* ---------- hero ---------- */
 .hero {
@@ -291,7 +291,7 @@ nav.main a:hover {
   border-radius: 8px;
 }
 .pillars .card {
-  border-top: 3px solid var(--accent);
+  border-top: 3px solid var(--ink);
 }
 /* ---------- request matrix table ---------- */
 .matrix {
@@ -391,7 +391,7 @@ pre .m {
 code {
   font: 0.92em ui-monospace, "Cascadia Code", Consolas, monospace;
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--ink);
   border-radius: 5px;
   padding: 1px 6px;
 }
@@ -440,7 +440,7 @@ figure.arch figcaption {
 }
 .doclist .no {
   font: 600 13px/1.7 ui-monospace, Consolas, monospace;
-  color: var(--accent);
+  color: var(--ink);
   white-space: nowrap;
 }
 .doclist a.title {
@@ -448,7 +448,7 @@ figure.arch figcaption {
   color: var(--ink);
 }
 .doclist a.title:hover {
-  color: var(--accent);
+  text-decoration: underline;
 }
 .doclist p {
   margin: 2px 0 0;
@@ -482,7 +482,7 @@ footer.site nav {
 .lost .num {
   font-family: "Iowan Old Style", Palatino, Georgia, serif;
   font-size: 96px;
-  color: var(--accent);
+  color: var(--ink);
   line-height: 1;
 }
 .lost p {
