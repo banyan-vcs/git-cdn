@@ -124,6 +124,14 @@ func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Resp
 	flight := &probeFlight{done: make(chan struct{})}
 	c.flights[key] = flight
 	c.mu.Unlock()
+	// Complete the flight no matter how the probe ends: a wedged flight
+	// would block every later probe for this key.
+	defer func() {
+		close(flight.done)
+		c.mu.Lock()
+		delete(c.flights, key)
+		c.mu.Unlock()
+	}()
 	// The shared probe must not die with the leader's connection: waiters
 	// still need its result after the leader disconnects.
 	probeCtx, cancel := context.WithTimeout(context.Background(), s.authTimeout)
@@ -141,10 +149,6 @@ func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Resp
 	if err == nil && response == nil && c.ttl > 0 {
 		s.rememberProbe(key, snapshot)
 	}
-	close(flight.done)
-	c.mu.Lock()
-	delete(c.flights, key)
-	c.mu.Unlock()
 	return snapshot, response, false, err
 }
 

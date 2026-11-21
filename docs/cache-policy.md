@@ -52,7 +52,8 @@ repository objects, hydration or upload-pack; the per-request upstream
 authorization probe is unchanged. Entry bytes count toward the scope size
 and the persistent budget, and per-scope retention is bounded by
 `max_pack_cache_bytes` (oldest first, oversized responses never stored).
-See [Configuration](configuration.md#response-pack-cache).
+Startup also sweeps staging leftovers of interrupted publications under
+the directory lock. See [Configuration](configuration.md#response-pack-cache).
 
 ## Temporary storage
 

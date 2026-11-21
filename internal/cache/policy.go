@@ -151,6 +151,7 @@ func (s *Store) loadEntries() error {
 		}
 		key := identity.Name()
 		path := filepath.Join(repos, key)
+		sweepStaging(filepath.Join(path, "packcache"))
 		size, err := directorySize(path)
 		if err != nil {
 			return err

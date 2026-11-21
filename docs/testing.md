@@ -20,6 +20,10 @@ Integration tests run a local authenticated native `git http-backend`. They cove
 
 Cache lifecycle tests additionally cover cross-credential reuse with independent authorization, migration of legacy credential directories without refetch, geometric pack reduction with root connectivity, budget failure preserving packs, queued leases delaying maintenance, full-clone ref pruning and single-branch clones leaving unrequested objects uncached.
 
+Concurrency tests cover the reader/writer repository gate (shared readers running in parallel, waiting writers blocking fresh readers, context cancellation unpinning waiters, queued requests preempting maintenance), warm incremental fetches serving concurrently under shared leases, response-pack single-flight across concurrent identical clones, streaming pins protecting in-flight responses from eviction, and orphaned response-pack staging files being swept at startup.
+
+Authorization-probe tests cover concurrent probes with the same repository and credential merging into one upstream request, the opt-in lifetime reuse including expiry and the revocation window, denials never being reused, credential and repository key separation, upstream failures relaying to merged waiters without wedging the flight, and the shared probe outliving a disconnected leader.
+
 GC tests use controlled object mtimes and collection cutoffs without sleeping for the retention window. They verify expiry beyond 14 days, recent cruft surviving geometric repack, retained history at day 13 and expiry after day 14, queued leases preventing collection below the pack threshold, and budget failures retaining objects.
 
 The Go live harness also has an offline integration test. It exercises all clone, update, mixed concurrency, cold-cache and replay scenarios using a temporary local origin and six clients:

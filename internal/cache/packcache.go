@@ -81,6 +81,22 @@ func (l *Lease) LookupPack(key []byte) (*os.File, error) {
 	return l.store.LookupPack(l.entry.key, key)
 }
 
+// sweepStaging removes response-pack staging leftovers from interrupted
+// publications. The directory lock excludes live requests at startup, so
+// any staging file present is an orphan; published entries never carry the
+// staging suffix.
+func sweepStaging(dir string) {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".staging") {
+			_ = os.Remove(filepath.Join(dir, file.Name()))
+		}
+	}
+}
+
 // StorePack publishes the spooled response at source under key and prunes
 // the repository's response-pack budget oldest-first. It reports whether a
 // new entry was written; failures are recoverable, the caller keeps serving

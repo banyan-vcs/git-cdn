@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chiyutianyi/git-cdn/internal/nativegit"
+	"github.com/chiyutianyi/git-cdn/internal/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,33 @@ func testStore(t *testing.T, limit int64) *Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestRestartSweepsOrphanedPackStaging(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root, nil, 1<<20)
+	require.NoError(t, err)
+	key := s.Key("a")
+	packDir := filepath.Join(root, "repos", key, "packcache")
+	require.NoError(t, os.MkdirAll(packDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(packDir, "orphan.staging"), []byte("junk"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(packDir, "deadbeef-4"), []byte("pack"), 0600))
+	require.NoError(t, s.Close())
+	s, err = Open(root, nil, 1<<20)
+	require.NoError(t, err)
+	defer s.Close()
+	_, err = os.Stat(filepath.Join(packDir, "orphan.staging"))
+	require.True(t, os.IsNotExist(err), "orphaned staging file survived the restart")
+	_, err = os.Stat(filepath.Join(packDir, "deadbeef-4"))
+	require.NoError(t, err, "published entry was swept")
+}
+
+func TestReconcileIgnoresUnknownScope(t *testing.T) {
+	s := testStore(t, 1<<20)
+	s.Reconcile(s.Key("absent"), protocol.Snapshot{ObservedAt: time.Now()})
+	require.EqualValues(t, 0, s.Stats().Entries, "reconciliation resurrected an unknown scope")
+	_, err := os.Stat(filepath.Join(s.Root, "repos", s.Key("absent")))
+	require.True(t, os.IsNotExist(err), "reconciliation created a scope directory")
 }
 
 func TestRestartRemovesOrphanedTemporaryFiles(t *testing.T) {

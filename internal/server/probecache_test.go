@@ -34,6 +34,7 @@ func TestConcurrentFetchesMergeAuthorizationProbes(t *testing.T) {
 	require.EqualValues(t, 1, f.probes.Load(), "concurrent identical fetches probed %d times", f.probes.Load())
 	require.EqualValues(t, requests, s.local.Load())
 	require.EqualValues(t, requests-1, s.probeMerged.Load())
+	require.EqualValues(t, requests-1, metricValue(t, h, "gitcdn_auth_probes_merged_total"))
 }
 
 func TestAuthProbeCacheReusesSnapshotsWithinTTL(t *testing.T) {
@@ -47,6 +48,7 @@ func TestAuthProbeCacheReusesSnapshotsWithinTTL(t *testing.T) {
 	responseBody(t, r2)
 	require.EqualValues(t, "HIT", r2.Header.Get("X-GitCDN-Auth-Cache"))
 	require.EqualValues(t, 1, f.probes.Load(), "a successful probe was reused within the TTL")
+	require.EqualValues(t, 1, metricValue(t, h, "gitcdn_auth_probe_cache_hits_total"))
 }
 
 func TestAuthProbeCacheExpires(t *testing.T) {
