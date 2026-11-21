@@ -13,9 +13,11 @@ import (
 
 // Concurrent fetches with the same credential merge into a single live
 // authorization probe; no configuration is required and semantics stay
-// live because waiters reuse the leader's fresh result.
+// live because waiters reuse the leader's fresh result. The origin delay
+// widens the in-flight window so slow runners cannot straddle it.
 func TestConcurrentFetchesMergeAuthorizationProbes(t *testing.T) {
 	f := newFixture(t)
+	f.delay.Store(int64(300 * time.Millisecond))
 	s, h := newCDN(t, f, nil)
 	body := fetchBody(f.tip)
 	const requests = 6

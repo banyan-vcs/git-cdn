@@ -55,6 +55,10 @@ type fixture struct {
 	attempts atomic.Int64
 	fetches  atomic.Int64
 	probes   atomic.Int64
+	// delay holds each authenticated origin request before it is answered,
+	// widening the in-flight window that concurrent tests must overlap
+	// deterministically on slow runners.
+	delay atomic.Int64 // nanoseconds
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -79,6 +83,9 @@ func newFixture(t *testing.T) *fixture {
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, "authentication required")
 			return
+		}
+		if d := f.delay.Load(); d > 0 {
+			time.Sleep(time.Duration(d))
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
