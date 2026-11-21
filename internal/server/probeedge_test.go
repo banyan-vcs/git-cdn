@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 
 	"github.com/stretchr/testify/require"
 )

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 )
 
 func (l *Lease) complete(ctx context.Context, roots []string, all bool) bool {

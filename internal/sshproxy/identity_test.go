@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
 	"github.com/stretchr/testify/require"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 )
 
 func TestSSHSingleModeSharesHTTPScope(t *testing.T) {

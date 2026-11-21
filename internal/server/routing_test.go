@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chiyutianyi/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

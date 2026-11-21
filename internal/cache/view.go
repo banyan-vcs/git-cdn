@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 // AncestorsAll reports whether every candidate commit is an ancestor of

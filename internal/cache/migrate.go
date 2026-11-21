@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 // Migration holds the directory lock. Objects move before roots, and old scope

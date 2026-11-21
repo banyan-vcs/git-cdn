@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 // probeCacheLimit bounds credential-scoped probe entries; the map is

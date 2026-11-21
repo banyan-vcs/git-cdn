@@ -1,4 +1,4 @@
-module github.com/chiyutianyi/git-cdn
+module gitlab.com/banyan-vcs/git-cdn
 
 go 1.26.0
 

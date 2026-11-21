@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/cache"
-	"github.com/chiyutianyi/git-cdn/internal/config"
-	"github.com/chiyutianyi/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
+	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 )
 
 type Server struct {

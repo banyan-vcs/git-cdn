@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
 	"github.com/stretchr/testify/require"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 func TestNewCachesAndViewsUseReftable(t *testing.T) {

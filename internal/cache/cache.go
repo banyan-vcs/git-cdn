@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chiyutianyi/git-cdn/internal/nativegit"
-	"github.com/chiyutianyi/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 type Store struct {
