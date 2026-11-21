@@ -124,10 +124,12 @@ func TestAccessStampsThrottleAndFlushAtClose(t *testing.T) {
 	require.Equal(t, beforeB, stamp(filepath.Dir(b)))
 	s.mu.Lock()
 	staleEntry, freshEntry := s.entries[s.Key("stale")], s.entries[s.Key("fresh")]
-	order := staleEntry.accessed.After(freshEntry.accessed)
+	// Coarse clocks can stamp both scopes in the same tick; recency must
+	// never fall behind, and the dirty flag is the deterministic signal.
+	order := !staleEntry.accessed.Before(freshEntry.accessed)
 	dirty := staleEntry.accessDirty
 	s.mu.Unlock()
-	require.True(t, order, "in-memory recency did not advance")
+	require.True(t, order, "in-memory recency fell behind the untouched scope")
 	require.True(t, dirty, "suppressed flush did not mark the entry dirty")
 
 	require.NoError(t, s.Close())

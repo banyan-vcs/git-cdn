@@ -23,14 +23,73 @@ func (l *Lease) complete(ctx context.Context, roots []string, all bool) bool {
 	return err == nil
 }
 
+// rootsIndexMinScopeBytes gates the indexed completeness check by scope
+// size. Consulting the index costs two git processes; the full walk it can
+// replace costs one process plus a traversal of every object. Small scopes
+// take the walk directly — measured on the benchmark fixture the index was
+// a net pessimization — while large ones amortize the processes instantly.
+const rootsIndexMinScopeBytes = 64 << 20
+
 // Complete reports whether every object reachable from roots is already
-// cached. Shared reader leases use it to decide whether a response can be
-// generated without an exclusive lease.
+// cached. Shared reader leases use it to decide whether a response can
+// be generated without an exclusive lease. Large scopes first consult the
+// pinned root index and fall back to the authoritative full walk.
 func (l *Lease) Complete(ctx context.Context, roots []string) bool {
 	if _, err := os.Stat(filepath.Join(l.Dir, "HEAD")); err != nil {
 		return false
 	}
+	if l.indexedScope() && l.rootsCover(ctx, roots) {
+		return true
+	}
 	return l.complete(ctx, roots, false)
+}
+
+// indexedScope reports whether the scope is large enough for the index to
+// pay for its two git processes.
+func (l *Lease) indexedScope() bool {
+	l.store.mu.Lock()
+	defer l.store.mu.Unlock()
+	return l.entry.size >= rootsIndexMinScopeBytes
+}
+
+// rootsCover is the indexed completeness check. Refs under refs/cache/
+// name closures that hydration verified complete — roots at publication,
+// upstream refs only for objects whose closure passed the walk, retained
+// refs preserving dropped roots with their objects. When every want is an
+// ancestor of some indexed ref, the want's object closure is necessarily
+// present and the full rev-list walk — a per-request traversal of the
+// entire object graph on warm incremental fetches — can be skipped.
+// Doubt (no refs, an error, a want outside every closure) falls back to
+// the walk. The index is a hint, not proof: externally deleted packs, or
+// a roots pin left by an interrupted publish, defeat it — but the shared
+// generation then fails and the exclusive path's authoritative walk
+// rehydrates, so the cache still self-heals within one request.
+func (l *Lease) rootsCover(ctx context.Context, wants []string) bool {
+	output, err := l.store.Git.Output(ctx, l.Dir, "", "for-each-ref", "--format=%(objectname)", "refs/cache/")
+	if err != nil {
+		return false
+	}
+	var in strings.Builder
+	for _, want := range wants {
+		in.WriteString(want)
+		in.WriteString("\n")
+	}
+	indexed := false
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		oid := strings.TrimSpace(line)
+		if oid == "" {
+			continue
+		}
+		indexed = true
+		in.WriteString("^")
+		in.WriteString(oid)
+		in.WriteString("\n")
+	}
+	if !indexed {
+		return false
+	}
+	output, err = l.store.Git.Output(ctx, l.Dir, in.String(), "rev-list", "--max-count=1", "--stdin")
+	return err == nil && len(output) == 0
 }
 
 // Ensure receives objects in a separate repository before publishing complete roots.
