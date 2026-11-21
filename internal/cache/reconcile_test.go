@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,4 +134,74 @@ func TestReconcileDefersWhileScopeIsBusy(t *testing.T) {
 	require.EqualValues(t, 0, setup.store.Stats().Reconciles, "reconciliation ran while the scope was busy")
 	shared.Release()
 	require.Eventually(t, func() bool { return setup.store.Stats().Reconciles >= 1 }, 10*time.Second, 50*time.Millisecond, "deferred reconciliation never ran once idle")
+}
+
+// A request preempts reconciliation so it can hydrate the new tip. The
+// cancellation must not put that request's newer snapshot into failure
+// backoff, or the old snapshot's retry becomes the last applied ref view.
+func TestReconcilePreemptionDoesNotBackoffSnapshotDrift(t *testing.T) {
+	setup := reconcileFixture(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var holdOnce, releaseOnce sync.Once
+	reconcileHold = func() {
+		holdOnce.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		require.NoError(t, setup.store.Close())
+		reconcileHold = nil
+	})
+	setup.store.Reconcile(setup.key, setup.snapshotFor(setup.first))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciliation never acquired its lease")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	acquired := make(chan *Lease, 1)
+	acquireErr := make(chan error, 1)
+	go func() {
+		lease, err := setup.store.Acquire(ctx, setup.key)
+		if err != nil {
+			acquireErr <- err
+			return
+		}
+		acquired <- lease
+	}()
+	require.Eventually(t, func() bool {
+		setup.store.mu.Lock()
+		defer setup.store.mu.Unlock()
+		return setup.store.entries[setup.key].writers == 1
+	}, 5*time.Second, 10*time.Millisecond, "request never preempted reconciliation")
+	releaseOnce.Do(func() { close(release) })
+	var lease *Lease
+	select {
+	case lease = <-acquired:
+	case err := <-acquireErr:
+		require.NoError(t, err)
+		return
+	case <-ctx.Done():
+		t.Fatal("request never acquired its lease after preemption")
+	}
+	defer func() {
+		if lease != nil {
+			lease.Release()
+		}
+	}()
+	_, err := lease.Ensure(ctx, setup.origin, nil, []string{setup.second})
+	require.NoError(t, err)
+	lease.Release()
+	lease = nil
+	setup.store.Reconcile(setup.key, setup.snapshotFor(setup.second))
+	require.Eventually(t, func() bool {
+		refs := setup.cacheRefs(t)
+		return strings.Contains(strings.Join(refs, " "), "refs/cache/roots/"+setup.second) &&
+			!strings.Contains(strings.Join(refs, " "), "refs/cache/roots/"+setup.first)
+	}, 10*time.Second, 50*time.Millisecond, "preempted reconciliation lost the new snapshot")
+	require.Contains(t, setup.cacheRefs(t), retainedPrefix+setup.first)
 }
