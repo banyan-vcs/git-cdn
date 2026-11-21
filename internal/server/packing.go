@@ -122,30 +122,106 @@ func (c *flightCache) waitOrLead(key string) (<-chan struct{}, func()) {
 }
 
 // tagRoots expands the root set with snapshot tags whose targets descend
-// from wants, bounded by the local validation budget.
+// from wants, bounded by the local validation budget. One batched rev-list
+// covers the common case where every tag target sits inside the fetched
+// history; a partial miss falls back to deciding the tags individually.
 func tagRoots(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, wants []string, base int) ([]string, error) {
-	var roots []string
-	tagCount := 0
+	type tagRef struct {
+		oid    string
+		target string
+	}
+	var tags []tagRef
 	for _, ref := range snapshot.Refs {
 		if !strings.HasPrefix(ref.Name, "refs/tags/") {
 			continue
 		}
-		tagCount++
-		if tagCount > 128 || ctx.Err() != nil {
+		if len(tags) >= 128 || ctx.Err() != nil {
 			return nil, errors.New("tag validation exceeds local budget")
 		}
 		target := ref.OID
 		if ref.Peeled != "" {
 			target = ref.Peeled
 		}
-		if lease.Ancestor(ctx, target, wants) {
-			roots = append(roots, ref.OID)
+		tags = append(tags, tagRef{oid: ref.OID, target: target})
+	}
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	targets := make([]string, len(tags))
+	for i, tag := range tags {
+		targets[i] = tag.target
+	}
+	var roots []string
+	if lease.AncestorsAll(ctx, targets, wants) {
+		for _, tag := range tags {
+			if len(roots)+base+1 > 128 {
+				return nil, errors.New("too many tag roots")
+			}
+			roots = append(roots, tag.oid)
 		}
-		if len(roots)+base > 128 {
+		return roots, nil
+	}
+	for _, tag := range tags {
+		if ctx.Err() != nil {
+			return nil, errors.New("tag validation exceeds local budget")
+		}
+		if !lease.AncestorsAll(ctx, []string{tag.target}, wants) {
+			continue
+		}
+		if len(roots)+base+1 > 128 {
 			return nil, errors.New("too many tag roots")
 		}
+		roots = append(roots, tag.oid)
 	}
 	return roots, nil
+}
+
+// storedUnderLease serves a stored response entry while a repository lease
+// is still held: the transfer outlives the gate, so the lease converts to
+// a streaming pin that keeps eviction away until the transfer ends.
+func (s *Server) storedUnderLease(scope string, key []byte, lease *cache.Lease) *responseFile {
+	if stored, err := lease.LookupPack(key); err == nil && stored != nil {
+		s.packHits.Add(1)
+		return s.warmResponse(scope, key, stored, s.store.Pin(scope))
+	}
+	return nil
+}
+
+// generateLocal builds the request's ref view, runs upload-pack into a
+// bounded spool file and publishes the response-pack entry for cacheable
+// requests. It is the shared tail of the shared-lease and exclusive paths.
+func (s *Server) generateLocal(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapshot, roots []string, data, key []byte) (*responseFile, error) {
+	view, err := lease.View(ctx, snapshot, roots)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(view)
+	output, err := os.CreateTemp(s.store.Tmp, "response-")
+	if err != nil {
+		return nil, err
+	}
+	file := &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
+	failed := true
+	defer func() {
+		if failed {
+			file.Close()
+		}
+	}()
+	if err := s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view); err != nil {
+		return nil, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if key != nil {
+		if stored, err := lease.StorePack(key, output.Name()); err != nil {
+			s.logger.Debug("response pack cache store failed", "error", err)
+		} else if stored {
+			s.packStores.Add(1)
+		}
+	}
+	failed = false
+	return file, nil
 }
 
 // serveShared generates a response under a shared reader lease, alongside
@@ -156,22 +232,17 @@ func tagRoots(ctx context.Context, lease *cache.Lease, snapshot protocol.Snapsho
 // response-pack hit.
 func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope string, key []byte, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, bool, bool) {
 	if key != nil {
-		if stored, err := lease.LookupPack(key); err == nil && stored != nil {
-			s.packHits.Add(1)
-			// Convert the reader lease into a streaming pin: the response
-			// outlives it, but eviction cannot remove its scope mid-stream.
-			return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
+		if file := s.storedUnderLease(scope, key, lease); file != nil {
+			return file, true, true
 		}
 	}
 	roots := unique(fetch.Wants)
 	if !lease.Complete(ctx, roots) {
 		return nil, false, false
 	}
-	for _, have := range unique(fetch.Haves) {
-		// The exclusive path reports the precise failure and falls back.
-		if !lease.Ancestor(ctx, have, roots) {
-			return nil, false, false
-		}
+	// The exclusive path reports the precise failure and falls back.
+	if !lease.AncestorsAll(ctx, unique(fetch.Haves), roots) {
+		return nil, false, false
 	}
 	if fetch.IncludeTag {
 		tags, err := tagRoots(ctx, lease, snapshot, fetch.Wants, len(roots))
@@ -195,52 +266,24 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 			case <-ctx.Done():
 				return nil, false, false
 			}
-			if stored, err := lease.LookupPack(key); err == nil && stored != nil {
-				s.packHits.Add(1)
-				return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
+			if file := s.storedUnderLease(scope, key, lease); file != nil {
+				return file, true, true
 			}
 			// The leader failed; this reader generates without a new flight.
 		} else {
 			// A leader may have published between the entry lookup above
 			// and this registration.
-			if stored, err := lease.LookupPack(key); err == nil && stored != nil {
+			if file := s.storedUnderLease(scope, key, lease); file != nil {
 				lead()
-				s.packHits.Add(1)
-				return s.warmResponse(scope, key, stored, s.store.Pin(scope)), true, true
+				return file, true, true
 			}
 			defer lead()
 		}
 	}
-	view, err := lease.View(ctx, snapshot, roots)
+	file, err := s.generateLocal(ctx, lease, snapshot, roots, data, key)
 	if err != nil {
 		return nil, false, false
 	}
-	defer os.RemoveAll(view)
-	output, err := os.CreateTemp(s.store.Tmp, "response-")
-	if err != nil {
-		return nil, false, false
-	}
-	file := &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
-	failed := true
-	defer func() {
-		if failed {
-			file.Close()
-		}
-	}()
-	if err := s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view); err != nil {
-		return nil, false, false
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, false, false
-	}
-	if key != nil {
-		if stored, err := lease.StorePack(key, output.Name()); err != nil {
-			s.logger.Debug("response pack cache store failed", "error", err)
-		} else if stored {
-			s.packStores.Add(1)
-		}
-	}
-	failed = false
 	return file, true, false
 }
 
@@ -283,11 +326,10 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	}
 	defer lease.Release()
 	if key != nil {
-		if stored, err := lease.LookupPack(key); err == nil && stored != nil {
-			s.packHits.Add(1)
-			// Convert the lease into a streaming pin: the response outlives
-			// the gate, but eviction cannot remove its scope mid-stream.
-			return s.warmResponse(scope, key, stored, s.store.Pin(scope)), "HIT", true, nil
+		// Convert a stored hit's lease into a streaming pin: the response
+		// outlives the gate, but eviction cannot remove its scope mid-stream.
+		if file := s.storedUnderLease(scope, key, lease); file != nil {
+			return file, "HIT", true, nil
 		}
 	}
 	roots := unique(fetch.Wants)
@@ -300,10 +342,8 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	if !hit {
 		s.hydrated.Add(1)
 	}
-	for _, have := range unique(fetch.Haves) {
-		if !lease.Ancestor(ctx, have, roots) {
-			return nil, "", false, errors.New("have is outside authorized roots")
-		}
+	if !lease.AncestorsAll(ctx, unique(fetch.Haves), roots) {
+		return nil, "", false, errors.New("have is outside authorized roots")
 	}
 	if fetch.FullFetch() {
 		if err := lease.SyncRefs(ctx, snapshot); err != nil {
@@ -332,37 +372,10 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 			}
 		}
 	}
-	view, err := lease.View(ctx, snapshot, roots)
+	file, err := s.generateLocal(ctx, lease, snapshot, roots, data, key)
 	if err != nil {
 		return nil, "", false, err
 	}
-	defer os.RemoveAll(view)
-	output, err := os.CreateTemp(s.store.Tmp, "response-")
-	if err != nil {
-		return nil, "", false, err
-	}
-	file := &responseFile{file: output, budget: s.responses, limit: s.config.MaxResponseBytes}
-	failed := true
-	defer func() {
-		if failed {
-			file.Close()
-		}
-	}()
-	err = s.git.Run(ctx, view, bytes.NewReader(data), file, map[string]string{"GIT_PROTOCOL": "version=2"}, "-c", "uploadpack.allowFilter=true", "upload-pack", "--stateless-rpc", view)
-	if err != nil {
-		return nil, "", false, err
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, "", false, err
-	}
-	if key != nil {
-		if stored, err := lease.StorePack(key, output.Name()); err != nil {
-			s.logger.Debug("response pack cache store failed", "error", err)
-		} else if stored {
-			s.packStores.Add(1)
-		}
-	}
-	failed = false
 	status := "MISS"
 	if hit {
 		status = "HIT"

@@ -11,17 +11,48 @@ import (
 	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
 
-func (l *Lease) Ancestor(ctx context.Context, have string, wants []string) bool {
-	typeName, err := l.store.Git.Output(ctx, l.Dir, "", "cat-file", "-t", have)
-	if err != nil || string(typeName) != "commit\n" {
+// AncestorsAll reports whether every candidate commit is an ancestor of
+// (or equal to) at least one root. Two git processes decide the whole
+// batch: a cat-file --batch-check gate keeps the earlier commit-only rule
+// (rev-list would silently ignore non-commit revisions), then one
+// rev-list takes the candidates as positive stdin revisions and the roots
+// as explicitly negated ones — empty output means every candidate's
+// history is contained in the union of the root histories, which holds
+// exactly when each candidate is an ancestor of some root. Replacing the
+// per-pair cat-file/merge-base probes drops a warm incremental request
+// from hundreds of serialized git spawns to two.
+func (l *Lease) AncestorsAll(ctx context.Context, candidates, roots []string) bool {
+	if len(candidates) == 0 {
+		return true
+	}
+	if len(roots) == 0 {
 		return false
 	}
-	for _, want := range wants {
-		if err := l.store.Git.Run(ctx, l.Dir, nil, io.Discard, nil, "merge-base", "--is-ancestor", have, want+"^{commit}"); err == nil {
-			return true
-		}
+	output, err := l.store.Git.Output(ctx, l.Dir, strings.Join(candidates, "\n")+"\n", "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	if err != nil {
+		return false
 	}
-	return false
+	commits := make([]string, 0, len(candidates))
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != "commit" {
+			// Missing or non-commit candidates were never covered.
+			return false
+		}
+		commits = append(commits, fields[0])
+	}
+	var in strings.Builder
+	for _, commit := range commits {
+		in.WriteString(commit)
+		in.WriteString("\n")
+	}
+	for _, root := range roots {
+		in.WriteString("^")
+		in.WriteString(root)
+		in.WriteString("\n")
+	}
+	output, err = l.store.Git.Output(ctx, l.Dir, in.String(), "rev-list", "--max-count=1", "--stdin")
+	return err == nil && len(output) == 0
 }
 
 func (l *Lease) View(ctx context.Context, snapshot protocol.Snapshot, roots []string) (string, error) {

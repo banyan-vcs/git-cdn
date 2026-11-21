@@ -96,6 +96,10 @@ func (f *responseFile) Read(p []byte) (int, error) {
 	return f.file.Read(p)
 }
 func (f *responseFile) Seek(offset int64, whence int) (int64, error) {
+	if f.stream != nil {
+		// Broadcast subscriptions have no file descriptor to reposition.
+		return 0, errors.New("broadcast stream is not seekable")
+	}
 	return f.file.Seek(offset, whence)
 }
 func (f *responseFile) Stat() (os.FileInfo, error) {
