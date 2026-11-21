@@ -33,11 +33,14 @@ type Server struct {
 	requests         *requestLimiter
 	responses        *responseBudget
 	trustedProxies   []*net.IPNet
+	probes           probeCache
 	rejected         atomic.Uint64
 	local            atomic.Uint64
 	hydrated         atomic.Uint64
 	proxied          atomic.Uint64
 	authDenied       atomic.Uint64
+	probeHits        atomic.Uint64
+	probeMerged      atomic.Uint64
 	packHits         atomic.Uint64
 	packStores       atomic.Uint64
 }
@@ -87,6 +90,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	s.authTimeout, _ = time.ParseDuration(c.UpstreamTimeout)
 	s.writeIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
 	s.requestTimeout, _ = time.ParseDuration(c.RequestTimeout)
+	s.probes.init(parseProbeTTL(c.AuthProbeCacheTTL))
 	for _, cidr := range c.TrustedProxyCIDRs {
 		_, network, _ := net.ParseCIDR(cidr)
 		s.trustedProxies = append(s.trustedProxies, network)

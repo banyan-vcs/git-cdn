@@ -1,0 +1,189 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/chiyutianyi/git-cdn/internal/protocol"
+)
+
+// probeCacheLimit bounds credential-scoped probe entries; the map is
+// small metadata, and dropping entries only costs a fresh probe.
+const probeCacheLimit = 8192
+
+// A probeCache collapses concurrent ls-refs authorization probes that share
+// a repository and credential into one upstream request, and optionally
+// reuses a successful probe for a short configured lifetime.
+//
+// Merging in-flight probes preserves live authorization: waiters receive the
+// leader's fresh result for the same instant, so a clone storm costs one
+// probe instead of one probe per request. Lifetime reuse is an explicit
+// configured tradeoff: authorization degrades from live to near-live, and a
+// revoked credential stays readable for at most that lifetime. Only
+// successful probes are reused — denials always re-probe — and entries live
+// in memory only: credentials appear solely as a hash in the key and never
+// touch disk.
+type probeCache struct {
+	ttl     time.Duration
+	mu      sync.Mutex
+	entries map[string]probeEntry
+	flights map[string]*probeFlight
+}
+
+type probeEntry struct {
+	snapshot protocol.Snapshot
+	expires  time.Time
+}
+
+// probeFlight carries one in-flight probe's outcome to its waiters.
+type probeFlight struct {
+	done     chan struct{}
+	snapshot protocol.Snapshot
+	response *replayedResponse
+	err      error
+}
+
+// replayedResponse captures an upstream denial so merged waiters relay the
+// leader's exact status, headers and body.
+type replayedResponse struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+func (c *probeCache) init(ttl time.Duration) {
+	c.ttl = ttl
+	c.entries = make(map[string]probeEntry)
+	c.flights = make(map[string]*probeFlight)
+}
+
+// parseProbeTTL maps the configured lifetime to a non-negative duration;
+// zero keeps authorization fully live.
+func parseProbeTTL(value string) time.Duration {
+	ttl, err := time.ParseDuration(value)
+	if err != nil || ttl < 0 {
+		return 0
+	}
+	return ttl
+}
+
+func (s *Server) probeKey(rt route, headers [][2]string) string {
+	h := sha256.New()
+	h.Write([]byte(rt.base.String()))
+	h.Write([]byte{0})
+	h.Write([]byte(rt.repo))
+	for _, header := range headers {
+		h.Write([]byte{0})
+		h.Write([]byte(header[0]))
+		h.Write([]byte{':'})
+		h.Write([]byte(header[1]))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// probe resolves the authorization snapshot for a fetch, merging concurrent
+// probes with the same repository and credential and reusing recent
+// successful probes when a lifetime is configured. The fourth return value
+// reports a lifetime-cache hit.
+func (s *Server) probe(r *http.Request, rt route) (protocol.Snapshot, *http.Response, bool, error) {
+	key := s.probeKey(rt, s.headers(r))
+	now := time.Now()
+	c := &s.probes
+	if c.ttl > 0 {
+		c.mu.Lock()
+		entry, ok := c.entries[key]
+		if ok {
+			if now.After(entry.expires) {
+				delete(c.entries, key)
+			} else {
+				c.mu.Unlock()
+				s.probeHits.Add(1)
+				return entry.snapshot, nil, true, nil
+			}
+		}
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	if flight, ok := c.flights[key]; ok {
+		c.mu.Unlock()
+		select {
+		case <-flight.done:
+			s.probeMerged.Add(1)
+			snapshot, response, err := flight.replay(rt)
+			return snapshot, response, false, err
+		case <-r.Context().Done():
+			return protocol.Snapshot{}, nil, false, r.Context().Err()
+		}
+	}
+	flight := &probeFlight{done: make(chan struct{})}
+	c.flights[key] = flight
+	c.mu.Unlock()
+	// The shared probe must not die with the leader's connection: waiters
+	// still need its result after the leader disconnects.
+	probeCtx, cancel := context.WithTimeout(context.Background(), s.authTimeout)
+	defer cancel()
+	snapshot, response, err := s.discover(r.Clone(probeCtx), rt)
+	flight.snapshot, flight.err = snapshot, err
+	if response != nil {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, s.config.MaxRefsBytes+1))
+		if readErr == nil {
+			flight.response = &replayedResponse{status: response.StatusCode, header: response.Header.Clone(), body: body}
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			response.ContentLength = int64(len(body))
+		}
+	}
+	if err == nil && response == nil && c.ttl > 0 {
+		s.rememberProbe(key, snapshot)
+	}
+	close(flight.done)
+	c.mu.Lock()
+	delete(c.flights, key)
+	c.mu.Unlock()
+	return snapshot, response, false, err
+}
+
+// rememberProbe stores a successful probe for the configured lifetime.
+func (s *Server) rememberProbe(key string, snapshot protocol.Snapshot) {
+	c := &s.probes
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= probeCacheLimit {
+		now := time.Now()
+		for k, entry := range c.entries {
+			if now.After(entry.expires) {
+				delete(c.entries, k)
+			}
+		}
+		for k := range c.entries {
+			if len(c.entries) < probeCacheLimit {
+				break
+			}
+			delete(c.entries, k)
+		}
+	}
+	c.entries[key] = probeEntry{snapshot: snapshot, expires: time.Now().Add(c.ttl)}
+}
+
+// replay materializes the flight's outcome for a waiter.
+func (f *probeFlight) replay(rt route) (protocol.Snapshot, *http.Response, error) {
+	if f.err != nil {
+		return protocol.Snapshot{}, nil, f.err
+	}
+	if f.response == nil {
+		return f.snapshot, nil, nil
+	}
+	response := &http.Response{
+		StatusCode:    f.response.status,
+		Header:        f.response.header.Clone(),
+		Body:          io.NopCloser(bytes.NewReader(f.response.body)),
+		ContentLength: int64(len(f.response.body)),
+		Request:       &http.Request{URL: rt.target(rt.repo + "/git-upload-pack")},
+	}
+	return protocol.Snapshot{}, response, nil
+}

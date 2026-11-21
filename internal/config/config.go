@@ -73,6 +73,7 @@ type Config struct {
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
 	MaxTempResponseBytes      int64               `json:"max_temp_response_bytes" yaml:"max_temp_response_bytes"`
 	MaxPackCacheBytes         int64               `json:"max_pack_cache_bytes" yaml:"max_pack_cache_bytes"`
+	AuthProbeCacheTTL         string              `json:"auth_probe_cache_ttl" yaml:"auth_probe_cache_ttl"`
 	WriteIdleTimeout          string              `json:"write_idle_timeout" yaml:"write_idle_timeout"`
 	RequestTimeout            string              `json:"request_timeout" yaml:"request_timeout"`
 	AllowInsecureHTTP         bool                `json:"allow_insecure_http" yaml:"allow_insecure_http"`
@@ -250,6 +251,12 @@ func (c *Config) validateLimits() error {
 		if err != nil || v <= 0 {
 			return fmt.Errorf("timeouts must be positive Go durations")
 		}
+	}
+	if c.AuthProbeCacheTTL == "" {
+		c.AuthProbeCacheTTL = "0s"
+	}
+	if ttl, err := time.ParseDuration(c.AuthProbeCacheTTL); err != nil || ttl < 0 {
+		return fmt.Errorf("auth_probe_cache_ttl must be a non-negative Go duration")
 	}
 	if c.RepackPackThreshold == 0 {
 		c.RepackPackThreshold = 32

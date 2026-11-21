@@ -47,13 +47,14 @@ func testGit(t *testing.T, dir string, args ...string) string {
 }
 
 type fixture struct {
-	work    string
-	repo    string
-	tip     string
-	origin  *httptest.Server
-	denied  atomic.Bool
-	fetches atomic.Int64
-	probes  atomic.Int64
+	work     string
+	repo     string
+	tip      string
+	origin   *httptest.Server
+	denied   atomic.Bool
+	attempts atomic.Int64
+	fetches  atomic.Int64
+	probes   atomic.Int64
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -72,6 +73,7 @@ func newFixture(t *testing.T) *fixture {
 			http.NotFound(w, r)
 			return
 		}
+		f.attempts.Add(1)
 		if f.denied.Load() || (r.Header.Get("Authorization") != testAuthorization && r.Header.Get("Authorization") != "Bearer second-user") {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Origin"`)
 			w.WriteHeader(http.StatusUnauthorized)

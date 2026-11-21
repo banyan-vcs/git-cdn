@@ -88,6 +88,7 @@ site prefix in multi-site mode.
 | `fetch_timeout` | 2m | Deadline for each hydration operation |
 | `git_timeout` | 2m | Total local deadline, including queueing, validation, hydration, and packing |
 | `upstream_timeout` | 30s | Deadline for the live ref probe |
+| `auth_probe_cache_ttl` | 0s (disabled) | Lifetime for reusing a successful authorization probe; see [Authorization probes](#authorization-probes) |
 
 ```yaml
 max_cache_bytes: 21474836480 # 20 GiB
@@ -100,6 +101,32 @@ lock and `tmp/`. Concurrent staging and response files need additional
 disk space. Run one service process per cache directory, and do not prune
 or delete objects while it runs. Cache eviction, maintenance and retention
 details: [cache-policy.md](cache-policy.md).
+
+## Authorization probes
+
+Every local fetch authorizes through a live upstream ls-refs probe carrying
+the caller's credentials. Two mechanisms bound probe traffic without
+touching the object cache's authorization boundary:
+
+Concurrent probes for the same repository and credential always merge into
+one upstream request. Waiters reuse the leader's fresh result, so merging
+is semantically transparent and always enabled: a clone storm of identical
+requests costs one probe. Merged and cached outcomes are observable through
+`gitcdn_auth_probes_merged_total` and `gitcdn_auth_probe_cache_hits_total`
+on `/metrics`.
+
+`auth_probe_cache_ttl` additionally reuses a successful probe for a short
+lifetime, keyed by repository and a hash of the forwarded credential
+headers (in memory only, never persisted). This is an explicit tradeoff:
+authorization degrades from live to near-live, and a revoked credential
+stays readable for at most the configured lifetime — 30–60s keeps origin
+probe rates at roughly one per repository and credential per interval.
+Only successful probes are reused; denials always re-probe, and a probe
+that has not yet completed still merges concurrent waiters. When enabled,
+`X-GitCDN-Auth-Cache: HIT|LIVE` on local responses reports the outcome.
+The default `0s` keeps authorization fully live. For fleet-scale probe
+convergence across CDN nodes, see the edge/shield design discussion in the
+project's scaling notes.
 
 ## Request limits
 

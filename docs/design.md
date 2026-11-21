@@ -22,7 +22,7 @@ Discovery and client ls-refs requests go upstream. Supported v2 fetches can use 
 
 ## Authorization boundary
 
-Every fetch selected for local execution performs a fresh upstream ls-refs query using that request's credentials. A previous discovery, another user's result or the presence of local objects does not authorize a read. Invalid/oversized responses and authentication failures cannot serve cached data.
+Every fetch selected for local execution performs a fresh upstream ls-refs query using that request's credentials. A previous discovery, another user's result or the presence of local objects does not authorize a read. Invalid/oversized responses and authentication failures cannot serve cached data. Concurrent probes for the same repository and credential merge into one upstream request — waiters reuse the leader's fresh result, which keeps authorization live while collapsing clone storms. A configured `auth_probe_cache_ttl` explicitly degrades this to near-live: a successful probe is reused for at most that lifetime, a revoked credential stays readable no longer than the window, and denials are never reused.
 
 Protocol v2 permits direct OID wants beyond advertised refs. Git upload-pack can serve retained objects that no longer appear in upstream refs, so its configuration switches are not sufficient authorization. The local path accepts current advertised tip/tag/peeled OIDs; other wants are forwarded for the upstream to decide. Haves must be ancestor commits of authorized roots. Relevant tags are checked before include-tag processing.
 

@@ -38,6 +38,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "gitcdn_gcs_total %d\ngitcdn_gc_failures_total %d\ngitcdn_gc_skipped_total %d\n", stats.GCs, stats.GCFailed, stats.GCSkipped)
 		fmt.Fprintf(w, "gitcdn_active_requests %d\ngitcdn_rejected_requests_total %d\ngitcdn_temp_response_bytes %d\ngitcdn_temp_response_max_bytes %d\n", s.requests.active(), s.rejected.Load(), s.responses.bytes(), s.config.MaxTempResponseBytes)
 		fmt.Fprintf(w, "gitcdn_pack_cache_hits_total %d\ngitcdn_pack_cache_stores_total %d\n", s.packHits.Load(), s.packStores.Load())
+		fmt.Fprintf(w, "gitcdn_auth_probe_cache_hits_total %d\ngitcdn_auth_probes_merged_total %d\n", s.probeHits.Load(), s.probeMerged.Load())
 		return
 	}
 	if !s.requests.acquire(time.Now()) {
@@ -93,7 +94,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.proxy(w, r, rt, "content-type")
 		return
 	}
-	snapshot, response, err := s.discover(r, rt)
+	snapshot, response, authCached, err := s.probe(r, rt)
 	if err != nil {
 		s.logger.Warn("upstream refs probe failed", "upstream", rt.id)
 		http.Error(w, "upstream refs probe failed", http.StatusBadGateway)
@@ -134,6 +135,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-GitCDN-Cache-Status", status)
+	if s.probes.ttl > 0 {
+		if authCached {
+			w.Header().Set("X-GitCDN-Auth-Cache", "HIT")
+		} else {
+			w.Header().Set("X-GitCDN-Auth-Cache", "LIVE")
+		}
+	}
 	if s.store.PackCacheBytes() > 0 {
 		if packHit {
 			w.Header().Set("X-GitCDN-Pack-Cache", "HIT")
