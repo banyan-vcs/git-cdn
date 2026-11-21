@@ -21,10 +21,11 @@ import (
 )
 
 type origin struct {
-	settings   config.SSHUpstream
-	user, repo string
-	git        *nativegit.Runner
-	maxPack    int64
+	settings       config.SSHUpstream
+	user, repo     string
+	sharedIdentity string
+	git            *nativegit.Runner
+	maxPack        int64
 }
 type originSession struct {
 	client  *ssh.Client
@@ -275,7 +276,14 @@ func receivePack(input io.Reader, output io.Writer, max int64) error {
 	return nil
 }
 
+// identity returns the cache scope for this repository. A shared identity
+// derives from the HTTP upstream in single-origin deployments; an explicit
+// cache_identity_url pins the scope manually; otherwise SSH state is keyed
+// by address, upstream username and path.
 func (o *origin) identity() string {
+	if o.sharedIdentity != "" {
+		return o.sharedIdentity
+	}
 	if o.settings.CacheIdentityURL != "" {
 		return strings.TrimSuffix(o.settings.CacheIdentityURL, "/") + "/" + o.repo + ":sha1"
 	}

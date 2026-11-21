@@ -24,7 +24,7 @@ HTTP and SSH run together. `ssh.listen` defaults to loopback port 2222, `ssh.max
 
 Single mode uses a direct repository path. Multi mode has `ssh.upstreams.<site>` and a leading `site/` path component. `path_prefix` prepends a fixed origin path. Repository case and optional `.git` aliases are preserved and normalized. Both SCP-style and `ssh://` client URLs work; paths are validated and forwarded relative to the configured origin.
 
-`cache_identity_url` explicitly associates SSH with the equivalent HTTP origin URL. Set it only when the configured endpoints and paths represent the same repositories and Git read permission domain. Without this setting SSH objects are keyed by SSH address, upstream username and path, and still shared across password values.
+When both frontends run in single-upstream mode, SSH shares the HTTP upstream's cache scope by default: objects and response packs are keyed by the HTTP origin URL plus the client-visible repository path, so one repository is cached once for both protocols. Single mode declares that the two endpoints front the same origin; if they do not, split them into multi mode or pin distinct scopes. In multi-site mode, or when `cache_identity_url` is set, SSH keys its own scopes instead: the explicit URL associates SSH with an equivalent HTTP origin — set it only when the configured endpoints and paths represent the same repositories and Git read permission domain — and otherwise objects are keyed by SSH address, upstream username and path, still shared across password values.
 
 ## Automatic first-use host-key enrollment
 

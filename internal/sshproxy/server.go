@@ -245,7 +245,19 @@ func (s *Server) route(user, repo string) (*origin, error) {
 		settings = &value
 		repo = path
 	}
-	return makeOrigin(*settings, user, repo, s.git, s.cfg.MaxCacheBytes)
+	o, err := makeOrigin(*settings, user, repo, s.git, s.cfg.MaxCacheBytes)
+	if err != nil {
+		return nil, err
+	}
+	// A single-origin deployment fronts the same upstream over both
+	// protocols: share its scope, keyed by the client-visible repository
+	// path. Explicit identities and multi-site routing keep their own keys.
+	if s.cfg.SSH.Mode == config.ModeSingle && settings.CacheIdentityURL == "" {
+		if identity, ok := s.backend.SharedScopeIdentity(repo); ok {
+			o.sharedIdentity = identity
+		}
+	}
+	return o, nil
 }
 
 func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request, user string, password []byte) {

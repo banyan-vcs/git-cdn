@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/chiyutianyi/git-cdn/internal/cache"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
+	"github.com/chiyutianyi/git-cdn/internal/cache"
+	"github.com/chiyutianyi/git-cdn/internal/config"
 	"github.com/chiyutianyi/git-cdn/internal/protocol"
 )
 
@@ -25,10 +27,30 @@ func unique(values []string) []string {
 	return result
 }
 
+// scopeIdentity derives the cache scope identity from an upstream base URL
+// and the client-visible repository path.
+func scopeIdentity(base *url.URL, repo string) string {
+	return base.String() + "/" + strings.TrimSuffix(repo, ".git") + ".git:sha1"
+}
+
+// SharedScopeIdentity reports the cache scope identity the HTTP frontend uses
+// for a client-visible repository path, so a co-deployed SSH frontend can
+// share the same scope. It applies only in single-upstream mode; multi-site
+// deployments pin identities explicitly per upstream.
+func (s *Server) SharedScopeIdentity(repo string) (string, bool) {
+	if s.config.Mode != config.ModeSingle {
+		return "", false
+	}
+	base := s.upstreams[config.SingleUpstreamID]
+	if base == nil {
+		return "", false
+	}
+	return scopeIdentity(base, repo), true
+}
+
 func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, string, bool, error) {
 	headers := s.headers(r)
-	identity := rt.base.String() + "/" + strings.TrimSuffix(rt.repo, ".git") + ".git:sha1"
-	return s.prepareObjects(r.Context(), identity, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
+	return s.prepareObjects(r.Context(), scopeIdentity(rt.base, rt.repo), fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
 		return l.Ensure(ctx, rt.target(rt.repo).String(), headers, roots)
 	})
 }

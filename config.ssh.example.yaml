@@ -17,7 +17,9 @@ ssh:
     known_hosts: ~/.git-cdn/known_hosts
     # accept-new creates this file on first use; changed keys are still rejected.
     host_key_policy: strict
-    cache_identity_url: https://git.example.com
+    # Single mode already shares the HTTP upstream's cache scope; cache_identity_url
+    # is only needed when that URL differs from the equivalent HTTP origin URL.
+    # cache_identity_url: https://git.example.com
 
 # For multiple SSH origins, replace upstream with upstreams and mode: multi.
 # Clients select a site with git@cdn.example:site/owner/repository.git.
