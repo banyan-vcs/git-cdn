@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- git-cdn mark: a fetch arrow landing in stacked cache layers -->
-  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f5f8b"/>
-  <g fill="none" stroke="#f4f9fc" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#3f3f46"/>
+  <g fill="none" stroke="#fafafa" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
     <path d="M32 12 v18"/>
     <path d="M23 24 l9 9 9-9"/>
   </g>
-  <g stroke="#e7eff5" stroke-width="4" stroke-linecap="round">
+  <g stroke="#f4f4f5" stroke-width="4" stroke-linecap="round">
     <path d="M17 42 h30"/>
     <path d="M17 50 h30" opacity="0.55"/>
   </g>
-  <circle cx="32" cy="12" r="4.5" fill="#d29a4e" stroke="none"/>
+  <circle cx="32" cy="12" r="4.5" fill="#a1a1aa" stroke="none"/>
 </svg>
