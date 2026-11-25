@@ -30,22 +30,29 @@ type Store struct {
 	packCache     atomic.Int64
 	evictions     uint64
 	evictedBytes  uint64
-	repack        RepackOptions
-	repackQueue   chan string
-	maintenance   context.Context
-	cancel        context.CancelFunc
-	workers       sync.WaitGroup
-	closeOnce     sync.Once
-	closeErr      error
-	closed        bool
-	repacks       uint64
-	repackFailed  uint64
-	repackSkipped uint64
-	gcs           uint64
-	gcFailed      uint64
-	gcSkipped     uint64
-	reconciles    uint64
-	rootsRetired  uint64
+	evicted       uint64
+	// trash lists evicted repository directories moved under Tmp for
+	// deletion outside mu; cleaning marks the background cleaner running.
+	trash    []string
+	cleaning bool
+	// hydrationBackoffs remembers, per scope key, hydrations that failed.
+	hydrationBackoffs map[string]*Backoff
+	repack            RepackOptions
+	repackQueue       chan string
+	maintenance       context.Context
+	cancel            context.CancelFunc
+	workers           sync.WaitGroup
+	closeOnce         sync.Once
+	closeErr          error
+	closed            bool
+	repacks           uint64
+	repackFailed      uint64
+	repackSkipped     uint64
+	gcs               uint64
+	gcFailed          uint64
+	gcSkipped         uint64
+	reconciles        uint64
+	rootsRetired      uint64
 }
 
 func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackOptions) (*Store, error) {
@@ -73,6 +80,11 @@ func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackO
 	}
 	if s.repack.GCRetention == 0 {
 		s.repack.GCRetention = MinimumGCRetention
+	}
+	// A full cruft repack is far heavier than a geometric one; without an
+	// explicit GC deadline it shares the repack's.
+	if s.repack.GCTimeout <= 0 {
+		s.repack.GCTimeout = s.repack.Timeout
 	}
 	if s.repack.PackThreshold < 2 || s.repack.Timeout <= 0 || s.repack.GCInterval <= 0 || s.repack.GCRetention < MinimumGCRetention {
 		s.Close()
@@ -111,6 +123,7 @@ func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackO
 		s.Close()
 		return nil, err
 	}
+	s.scheduleTrashClean()
 	git.Logger().Info("cache store opened", "cache_bytes", s.usedBytes, "max_cache_bytes", s.maxBytes, "repository_count", len(s.entries),
 		"eviction_count", s.evictions, "evicted_bytes", s.evictedBytes)
 	if git != nil {
@@ -216,6 +229,14 @@ func (s *Store) acquire(ctx context.Context, key string, shared bool) (*Lease, e
 		e.writers++
 	}
 	for !e.gateReady(shared) {
+		// Only a caller that is still waiting preempts long maintenance.
+		// One that already timed out or lost its client leaves the
+		// repack, GC or reconciliation it would have cancelled alone.
+		if ctx.Err() != nil {
+			s.unpinWaiter(e, shared)
+			s.mu.Unlock()
+			return nil, ctx.Err()
+		}
 		// A waiting request preempts long maintenance: cancel it so the
 		// queued reader or writer can proceed; maintenance retries later.
 		if cancel := e.cancelMaint; cancel != nil {
@@ -228,13 +249,7 @@ func (s *Store) acquire(ctx context.Context, key string, shared bool) (*Lease, e
 			s.mu.Lock()
 		case <-ctx.Done():
 			s.mu.Lock()
-			if !shared {
-				e.writers--
-			}
-			e.users--
-			if e.users == 0 && e.size == 0 {
-				delete(s.entries, e.key)
-			}
+			s.unpinWaiter(e, shared)
 			s.mu.Unlock()
 			return nil, ctx.Err()
 		}
@@ -243,6 +258,18 @@ func (s *Store) acquire(ctx context.Context, key string, shared bool) (*Lease, e
 	e.accessed = time.Now()
 	s.mu.Unlock()
 	return &Lease{Dir: filepath.Join(s.Root, "repos", key, "repo.git"), store: s, entry: e, shared: shared}, nil
+}
+
+// unpinWaiter releases a caller that waited for the gate and gave up.
+// Caller holds Store.mu.
+func (s *Store) unpinWaiter(e *entry, shared bool) {
+	if !shared {
+		e.writers--
+	}
+	e.users--
+	if e.users == 0 && e.size == 0 {
+		delete(s.entries, e.key)
+	}
 }
 
 // reconcileHold is a test seam that pauses a reconciliation goroutine after
@@ -274,7 +301,7 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 		s.mu.Unlock()
 		return
 	}
-	if !e.reconcileFailed.IsZero() && time.Since(e.reconcileFailed) < reconcileFailureBackoff {
+	if !e.reconcile.Due(time.Now()) {
 		s.mu.Unlock()
 		return
 	}
@@ -302,7 +329,7 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 			// A foreground request cancels reconciliation to make progress.
 			// Its newer snapshot must not inherit failure backoff from that cancellation.
 			if err != nil && !preempted {
-				e.reconcileFailed = time.Now()
+				e.reconcile.Fail(time.Now(), reconcileFailureBackoff, reconcileFailureBackoff)
 			}
 			s.mu.Unlock()
 			lease.Release()
@@ -419,20 +446,21 @@ func (l *Lease) release(schedule bool) {
 	s := l.store
 	e := l.entry
 	now := time.Now()
-	// Writers rescan the scope size while still holding its exclusive
-	// gate, before taking the global mutex: the walk no longer blocks
-	// every other scope's gate operations. Readers skip the rescan.
-	size, haveSize := int64(0), false
+	// Writers rescan their scope while still holding its exclusive gate,
+	// before taking the global mutex: the walk no longer blocks every other
+	// scope's gate operations. Readers skip the rescan; nothing they do
+	// changes the scope's object packs.
+	var measured scopeMeasure
+	haveSize := false
 	if !l.shared {
-		if scanned, err := directorySize(filepath.Dir(l.Dir)); err == nil {
-			size, haveSize = scanned, true
+		if m, err := measureScope(filepath.Dir(l.Dir)); err == nil {
+			measured, haveSize = m, true
 		}
 	}
 	s.mu.Lock()
 	e.accessed = now
 	if haveSize {
-		s.usedBytes += size - e.size
-		e.size = size
+		s.applyMeasureLocked(e, measured)
 	}
 	// Claim after the size update: a writer's first release publishes the
 	// scope size, and that release must also stamp recency.
@@ -451,4 +479,5 @@ func (l *Lease) release(schedule bool) {
 	}
 	s.mu.Unlock()
 	s.flushAccess(filepath.Dir(l.Dir), now, flush)
+	s.scheduleTrashClean()
 }

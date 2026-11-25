@@ -3,6 +3,7 @@ package nativegit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,18 +160,27 @@ func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io
 func commandName(args []string) string {
 	for _, arg := range args {
 		switch arg {
-		case "init", "fetch", "upload-pack", "receive-pack", "index-pack", "rev-list", "update-ref", "for-each-ref", "cat-file", "merge-base", "repack", "prune", "symbolic-ref", "rev-parse":
+		case "init", "fetch", "upload-pack", "receive-pack", "index-pack", "rev-list", "update-ref", "for-each-ref", "cat-file", "merge-base", "repack", "prune", "commit-graph", "symbolic-ref", "rev-parse":
 			return arg
 		}
 	}
 	return "other"
 }
 
+// MetadataOutputLimit bounds what one metadata command may return in
+// memory. Tests lower it to exercise callers' handling of oversized output.
+var MetadataOutputLimit = 16 << 20
+
 func (r *Runner) Output(ctx context.Context, dir string, input string, args ...string) ([]byte, error) {
 	var b bytes.Buffer
-	err := r.Run(ctx, dir, strings.NewReader(input), &boundedOutput{buffer: &b, left: 16 << 20}, nil, args...)
+	err := r.Run(ctx, dir, strings.NewReader(input), &boundedOutput{buffer: &b, left: MetadataOutputLimit}, nil, args...)
 	return b.Bytes(), err
 }
+
+// ErrOutputLimit is returned when a metadata command prints more than the
+// in-memory output bound. Callers that ask for an open-ended listing use it
+// to tell an oversized answer from a failed command.
+var ErrOutputLimit = errors.New("git metadata output exceeds limit")
 
 type boundedOutput struct {
 	buffer *bytes.Buffer
@@ -179,7 +189,7 @@ type boundedOutput struct {
 
 func (w *boundedOutput) Write(p []byte) (int, error) {
 	if len(p) > w.left {
-		return 0, fmt.Errorf("git metadata output exceeds limit")
+		return 0, ErrOutputLimit
 	}
 	w.left -= len(p)
 	return w.buffer.Write(p)

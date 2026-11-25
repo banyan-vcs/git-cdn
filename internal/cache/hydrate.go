@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -109,35 +110,55 @@ func (l *Lease) Ensure(ctx context.Context, origin string, headers [][2]string, 
 		for _, h := range headers {
 			pairs = append(pairs, [2]string{"http." + strings.TrimSuffix(origin, "/") + "/.extraHeader", h[0] + ": " + h[1]})
 		}
-		args := []string{"-c", "protocol.version=2", "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", origin}
+		// Refspecs travel on stdin: a default clone of a many-ref repository
+		// or an include-tag fetch covering thousands of tags names more
+		// roots than a command line holds on every platform.
+		var refspecs strings.Builder
 		for _, root := range roots {
-			args = append(args, root+":refs/cache/roots/"+root)
+			refspecs.WriteString(root)
+			refspecs.WriteString(":refs/cache/roots/")
+			refspecs.WriteString(root)
+			refspecs.WriteString("\n")
 		}
-		return l.store.Git.Run(ctx, stage, nil, io.Discard, nativegit.ConfigEnvironment(pairs), args...)
+		args := []string{"-c", "protocol.version=2", "fetch", "--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--stdin", origin}
+		return l.store.Git.Run(ctx, stage, strings.NewReader(refspecs.String()), io.Discard, nativegit.ConfigEnvironment(pairs), args...)
 	})
 }
 
 func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSource) (hit bool, err error) {
 	started := time.Now()
 	phase := "scope"
+	// attempted marks that the fetch itself ran (and failed); a request
+	// whose deadline ran out before that says nothing about the scope.
+	attempted := false
 	defer func() {
 		attrs := []slog.Attr{slog.String("cache_key", l.entry.key), slog.String("phase", phase), slog.Int("root_count", len(roots)),
 			slog.Int64("duration_ms", time.Since(started).Milliseconds())}
-		if err != nil {
+		switch {
+		case err == nil:
+			if hit {
+				logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelDebug, "cache objects reused", attrs...)
+			} else {
+				logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelInfo, "cache objects hydrated", attrs...)
+			}
+		case errors.Is(err, ErrHydrationBackoff):
+			attrs = append(attrs, slog.Int64("backoff_ms", l.store.hydrationWait(l.entry.key).Milliseconds()))
+			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelDebug, "cache hydration deferred by backoff", attrs...)
+		default:
 			if err == ErrCapacity {
 				attrs = append(attrs, slog.String("reason", "capacity_unavailable"))
 			}
+			// A canceled caller left or the service is stopping; that says
+			// nothing about the scope. Anything else does: a fetch that ran
+			// out of time, a local failure before it.
+			if !errors.Is(err, context.Canceled) && (attempted || !errors.Is(err, context.DeadlineExceeded)) {
+				attrs = append(attrs, slog.Int64("backoff_ms", l.store.hydrationFailed(l.entry.key).Milliseconds()))
+			}
 			logging.Failure(ctx, l.store.Git.Logger(), "cache hydration failed", err, attrs...)
-			return
-		}
-		if hit {
-			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelDebug, "cache objects reused", attrs...)
-		} else {
-			logging.Logger(ctx, l.store.Git.Logger()).LogAttrs(ctx, slog.LevelInfo, "cache objects hydrated", attrs...)
 		}
 	}()
 	g := l.store.Git
-	if err := l.store.ensureScope(l.entry.key); err != nil {
+	if err = l.store.ensureScope(l.entry.key); err != nil {
 		return false, err
 	}
 	_, existsErr := os.Stat(filepath.Join(l.Dir, "HEAD"))
@@ -145,6 +166,14 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 	phase = "check_objects"
 	if exists && l.complete(ctx, roots, false) {
 		return true, nil
+	}
+	// Roots that are missing are not fetched while the scope backs off from
+	// its last failed hydration: the attempt costs a full fetch_timeout
+	// under the exclusive gate, and repeating it per request is what the
+	// storm does.
+	if l.store.hydrationBlocked(l.entry.key) {
+		phase = "backoff"
+		return false, ErrHydrationBackoff
 	}
 	phase = "initialize_staging"
 	stage, err := os.MkdirTemp(l.store.Tmp, "hydrate-")
@@ -179,6 +208,7 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 	}
 	phase = "fetch_objects"
 	logging.Logger(ctx, g.Logger()).InfoContext(ctx, "cache hydration started", "cache_key", l.entry.key, "root_count", len(roots))
+	attempted = true
 	if err := l.runBounded(ctx, stage, func(ctx context.Context) error { return source(ctx, stage, roots) }); err != nil {
 		return false, err
 	}
@@ -195,5 +225,6 @@ func (l *Lease) EnsureWith(ctx context.Context, roots []string, source HydrateSo
 	l.store.mu.Lock()
 	l.entry.hydrateSince++
 	l.store.mu.Unlock()
+	l.store.hydrationRecovered(l.entry.key)
 	return false, nil
 }

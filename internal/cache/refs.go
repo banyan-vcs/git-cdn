@@ -236,6 +236,7 @@ func (l *Lease) recordReconcile(snapshot protocol.Snapshot, retired int) {
 	l.store.mu.Lock()
 	l.entry.reconcileFP = snapshot.Fingerprint()
 	l.entry.hydrateSince = 0
+	l.entry.reconcile.Reset()
 	l.store.reconciles++
 	l.store.rootsRetired += uint64(retired)
 	l.store.mu.Unlock()

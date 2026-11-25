@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,8 +17,11 @@ import (
 type RepackOptions struct {
 	PackThreshold int
 	Timeout       time.Duration
-	GCInterval    time.Duration
-	GCRetention   time.Duration
+	// GCTimeout bounds a cruft-repack collection, which rewrites every
+	// pack; zero makes it share Timeout.
+	GCTimeout   time.Duration
+	GCInterval  time.Duration
+	GCRetention time.Duration
 }
 
 const MinimumGCRetention = 14 * 24 * time.Hour
@@ -44,7 +48,10 @@ func (s *Store) queueRepackLocked(e *entry) {
 	if s.repackQueue == nil || s.maintenance.Err() != nil || e.repackPending || e.users != 0 {
 		return
 	}
-	if time.Since(e.lastGC) < s.repack.GCInterval && regularPackCount(filepath.Join(s.Root, "repos", e.key, "repo.git")) < s.repack.PackThreshold {
+	// The pack count comes from the writer's last rescan: reading the
+	// directory here put filesystem work on the store mutex of every
+	// request whose lease made a scope idle.
+	if !s.gcDueLocked(e, time.Now()) && !(e.regularPacks >= s.repack.PackThreshold && e.repack.Due(time.Now())) {
 		return
 	}
 	select {
@@ -52,6 +59,12 @@ func (s *Store) queueRepackLocked(e *entry) {
 		e.repackPending = true
 	default:
 	}
+}
+
+// gcDueLocked reports whether the collection interval has elapsed since the
+// last successful collection and the previous attempt is not backing off.
+func (s *Store) gcDueLocked(e *entry, now time.Time) bool {
+	return now.Sub(e.lastGC) >= s.repack.GCInterval && e.gc.Due(now)
 }
 
 func (s *Store) maintain() {
@@ -85,10 +98,19 @@ func (s *Store) maintain() {
 				s.mu.Unlock()
 				continue
 			}
+			now := time.Now()
+			collect := s.gcDueLocked(e, now)
+			if !collect && !e.repack.Due(now) {
+				s.mu.Unlock()
+				continue
+			}
 			e.users++
 			e.writer = true
-			collect := time.Since(e.lastGC) >= s.repack.GCInterval
-			ctx, cancel := context.WithTimeout(s.maintenance, s.repack.Timeout)
+			timeout := s.repack.Timeout
+			if collect {
+				timeout = s.repack.GCTimeout
+			}
+			ctx, cancel := context.WithTimeout(s.maintenance, timeout)
 			// Let queued requests preempt long maintenance; it retries later.
 			e.cancelMaint = cancel
 			s.mu.Unlock()
@@ -103,9 +125,22 @@ func (s *Store) maintain() {
 			var err error
 			if collect {
 				changed, err = l.Collect(ctx)
+			} else if regularPackCount(l.Dir) < s.repack.PackThreshold {
+				// The cached count ran ahead of the directory; nothing to do.
+				cancel()
+				s.mu.Lock()
+				e.cancelMaint = nil
+				s.mu.Unlock()
+				l.release(false)
+				continue
 			} else {
 				changed, err = l.Repack(ctx)
 			}
+			// A queued request cancels maintenance to proceed. That is
+			// neither a failure nor a success: the attempt counts for
+			// nothing and the next trigger retries at the same delay. The
+			// cause is read before the deadline is released.
+			preempted := errors.Is(ctx.Err(), context.Canceled) && s.maintenance.Err() == nil
 			cancel()
 			attrs := []slog.Attr{slog.Int64("duration_ms", time.Since(started).Milliseconds()), slog.Bool("changed", changed)}
 			if err != nil {
@@ -119,22 +154,35 @@ func (s *Store) maintain() {
 			}
 			s.mu.Lock()
 			e.cancelMaint = nil
-			if collect {
-				if err != nil {
-					s.gcFailed++
-				} else if changed {
-					s.gcs++
+			if !preempted {
+				backoff := &e.repack
+				if collect {
+					backoff = &e.gc
+					switch {
+					case err != nil:
+						s.gcFailed++
+					case changed:
+						s.gcs++
+					default:
+						s.gcSkipped++
+					}
 				} else {
-					s.gcSkipped++
+					switch {
+					case err != nil:
+						s.repackFailed++
+					case changed:
+						s.repacks++
+					default:
+						s.repackSkipped++
+					}
 				}
-			} else {
-				switch {
-				case err != nil:
-					s.repackFailed++
-				case changed:
-					s.repacks++
-				default:
-					s.repackSkipped++
+				// A capacity shortage is retried on the same schedule as a
+				// failure: deciding it again costs a full object walk, which
+				// the minute-based scan would otherwise repeat forever.
+				if err != nil || !changed {
+					backoff.Fail(time.Now(), maintenanceFailureBackoff, failureBackoffLimit)
+				} else {
+					backoff.Reset()
 				}
 			}
 			s.mu.Unlock()
@@ -187,6 +235,13 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 		return false, err
 	}
 	defer os.RemoveAll(stage)
+	// A collection rebuilds the commit-graph in staging; graphReady marks
+	// the one that passed admission and is to be installed.
+	var previousGraph int64
+	if info, err := os.Stat(filepath.Join(l.Dir, "objects", "info", "commit-graph")); err == nil {
+		previousGraph = info.Size()
+	}
+	graph, graphReady := filepath.Join(stage, "objects", "info", "commit-graph"), false
 	shared := make(map[string]os.FileInfo)
 	if err := filepath.WalkDir(l.Dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -207,6 +262,14 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 			return fmt.Errorf("repository maintenance requires regular files")
 		}
 		parts := strings.Split(filepath.ToSlash(relative), "/")
+		// Commit-graph files are rebuilt by collection, never copied: one can
+		// be large, and duplicating it would read it into memory.
+		if len(parts) >= 3 && parts[0] == "objects" && parts[1] == "info" && (parts[2] == "commit-graph" || parts[2] == "commit-graphs") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		immutable := len(parts) == 3 && parts[0] == "objects" &&
 			(len(parts[1]) == 2 || (parts[1] == "pack" &&
 				(strings.HasSuffix(parts[2], ".pack") || strings.HasSuffix(parts[2], ".idx") || strings.HasSuffix(parts[2], ".rev") || strings.HasSuffix(parts[2], ".bitmap"))))
@@ -311,12 +374,39 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 	if err != nil {
 		return false, err
 	}
+	// The objects are judged against their reservation first; the graph is
+	// written afterwards, so its bytes never fail the repack they follow.
 	size, err := newBytes()
 	if err != nil {
 		return false, err
 	}
 	if size > budget {
 		return false, ErrCapacity
+	}
+	if collect {
+		// Collection is the one pass that already touches every commit, so
+		// it is where the commit-graph is rebuilt. Ancestry checks (client
+		// haves, include-tag targets, the pinned-root index) then stop at
+		// generation boundaries instead of walking whole histories.
+		if err := l.store.Git.Run(ctx, stage, nil, io.Discard, nil, "commit-graph", "write", "--reachable"); err == nil {
+			// The graph is optional capacity: it is admitted only when its
+			// growth over the graph it replaces fits, and otherwise left
+			// out rather than failing the collection it accompanies.
+			if info, err := os.Stat(graph); err == nil {
+				if r, err := l.reserve(max(info.Size()-previousGraph, 0)); err == nil {
+					defer r.release()
+					graphReady = true
+				} else {
+					_ = os.Remove(graph)
+				}
+			}
+		} else if ctx.Err() != nil {
+			return false, err
+		} else {
+			// The graph only shortens walks; the repository is correct
+			// without it and the next collection tries again.
+			logging.Failure(ctx, l.store.Git.Logger(), "commit-graph generation skipped", err, slog.String("cache_key", l.entry.key))
+		}
 	}
 	if err := l.store.Git.Run(ctx, stage, nil, io.Discard, nil, "rev-list", "--objects", "--missing=error", "--quiet", "--all"); err != nil {
 		return false, err
@@ -348,6 +438,24 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 			}
 			changed = true
 		}
+	}
+	if graphReady {
+		// Install the rebuilt graph like pack data, by rename, so readers
+		// never observe a partially written file. Git publishes the graph
+		// read-only, and Windows refuses to rename over such a file, so the
+		// previous one is unlinked first; the exclusive gate keeps readers
+		// away from the gap.
+		target := filepath.Join(l.Dir, "objects", "info", "commit-graph")
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+			return false, err
+		}
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return false, err
+		}
+		if err := os.Rename(graph, target); err != nil {
+			return false, err
+		}
+		changed = true
 	}
 	if collect {
 		// Remove expired grace pins only after all retained pack data is installed.

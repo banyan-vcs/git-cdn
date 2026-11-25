@@ -9,19 +9,26 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
 )
 
 // The response pack cache stores complete upload-pack responses verbatim,
-// keyed by the serving side (repository identity, exact request bytes and
-// the live ref snapshot). Entries are self-contained: a hit can stream the
+// keyed by the serving side (repository identity, request content and the
+// live ref snapshot). Entries are self-contained: a hit can stream the
 // stored file without consulting repository objects. Correctness of reuse
 // relies on the request pipeline: the snapshot fingerprint covers ref views
 // (new tags change include-tag output even for identical want sets), and
 // want OIDs are validated against the live snapshot before prepare runs.
 // Entries share the repository scope, so they count toward the persistent
 // cache budget and disappear with whole-scope LRU eviction.
+//
+// The index is the only authority for how many bytes the entries occupy:
+// directory rescans leave files under packcache/ out of the scope size and
+// the index sizes are added instead. Storing, pruning, invalidating and
+// losing a file then each adjust the budget exactly once, whichever order
+// they happen in.
 
 func (s *Store) packDir(scope string) string {
 	return filepath.Join(s.Root, "repos", scope, "packcache")
@@ -55,13 +62,17 @@ func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
 		s.mu.Unlock()
 		return nil, nil
 	}
-	size, ok := e.packs[hexed]
+	p := e.packs[hexed]
+	if p != nil {
+		// Recency is in-memory only: it orders pruning inside this process.
+		p.accessed = time.Now()
+	}
 	s.mu.Unlock()
-	if !ok {
+	if p == nil {
 		return nil, nil
 	}
 	dir := s.packDir(scope)
-	path := filepath.Join(dir, packName(key, size))
+	path := filepath.Join(dir, packName(key, p.size))
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -72,8 +83,8 @@ func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
 		}
 		return nil, nil
 	}
-	if info.Size() != size {
-		s.Git.Logger().Warn("response pack cache entry invalidated", "cache_key", scope, "reason", "size_mismatch", "expected_bytes", size, "actual_bytes", info.Size())
+	if info.Size() != p.size {
+		s.Git.Logger().Warn("response pack cache entry invalidated", "cache_key", scope, "reason", "size_mismatch", "expected_bytes", p.size, "actual_bytes", info.Size())
 		_ = os.Remove(path)
 		s.forgetPack(scope, hexed)
 		return nil, nil
@@ -86,12 +97,16 @@ func (s *Store) LookupPack(scope string, key []byte) (*os.File, error) {
 	return file, nil
 }
 
-// forgetPack drops an index entry whose file no longer matches. Caller has
-// released mu; the map write re-acquires it.
+// forgetPack drops an index entry whose file no longer matches and returns
+// its bytes to the budget. Caller has released mu; the map write re-acquires it.
 func (s *Store) forgetPack(scope, hexed string) {
 	s.mu.Lock()
 	if e := s.entries[scope]; e != nil && e.packs != nil {
-		delete(e.packs, hexed)
+		if p := e.packs[hexed]; p != nil {
+			delete(e.packs, hexed)
+			e.size -= p.size
+			s.usedBytes -= p.size
+		}
 	}
 	s.mu.Unlock()
 }
@@ -118,10 +133,13 @@ func sweepStaging(dir string) {
 }
 
 // StorePack publishes the spooled response at source under key and prunes
-// the repository's response-pack budget oldest-first. It reports whether a
-// new entry was written; failures are recoverable, the caller keeps serving
-// from the spool. Concurrent shared leases serialize pack publication
-// through the scope's pack mutex without excluding readers elsewhere.
+// the repository's response-pack budget. It reports whether a new entry
+// was written; failures are recoverable, the caller keeps serving from the
+// spool. Concurrent shared leases serialize pack publication through the
+// scope's pack mutex without excluding readers elsewhere. The entry's bytes
+// enter the scope size and the store budget here, whichever lease stored
+// them: a reader lease never rescans its scope, so without this the budget
+// would miss every entry stored on the shared path.
 func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 	l.entry.packMu.Lock()
 	defer l.entry.packMu.Unlock()
@@ -155,10 +173,10 @@ func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 		_ = os.Remove(staging)
 		return false, err
 	}
+	hexed := fmt.Sprintf("%x", key)
 	// Drop a stale entry from an earlier generation with the same key and
 	// a different size, so the index and the directory keep exactly one
 	// file per response key.
-	hexed := fmt.Sprintf("%x", key)
 	if published, err := os.ReadDir(dir); err == nil {
 		prefix := hexed + "-"
 		for _, stale := range published {
@@ -168,54 +186,91 @@ func (l *Lease) StorePack(key []byte, source string) (bool, error) {
 			}
 		}
 	}
+	now := time.Now()
 	l.store.mu.Lock()
 	if l.entry.packs == nil {
-		l.entry.packs = make(map[string]int64)
+		l.entry.packs = make(map[string]*packEntry)
 	}
-	l.entry.packs[hexed] = info.Size()
+	// The index entry being replaced accounts for the stale generation's
+	// bytes; the new entry is charged in its place.
+	var previous int64
+	if old := l.entry.packs[hexed]; old != nil {
+		previous = old.size
+	}
+	l.entry.packs[hexed] = &packEntry{size: info.Size(), accessed: now}
+	l.entry.size += info.Size() - previous
+	l.store.usedBytes += info.Size() - previous
 	l.store.mu.Unlock()
 	l.prunePacks(dir, limit)
+	// Like a writer's release, a stored entry may push the store over its
+	// budget; the oldest idle scopes make room.
+	l.store.mu.Lock()
+	_ = l.store.makeRoomLocked(0)
+	l.store.mu.Unlock()
+	l.store.scheduleTrashClean()
 	return true, nil
 }
 
-// prunePacks removes stray staging files and the oldest entries until the
-// directory fits the budget. The lease guarantees exclusive access.
+// prunePacks removes stray staging files and the least recently served
+// entries until the directory fits the budget. The lease guarantees no
+// other publisher touches the directory meanwhile.
 func (l *Lease) prunePacks(dir string, limit int64) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	type packed struct {
-		path string
-		size int64
+		path, hexed string
+		size        int64
+		accessed    time.Time
+		indexed     bool
 	}
 	var total int64
 	var packs []packed
+	var staging []string
+	l.store.mu.Lock()
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) == ".staging" {
+			staging = append(staging, path)
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		if filepath.Ext(entry.Name()) == ".staging" {
-			_ = os.Remove(path)
-			continue
+		p := packed{path: path, size: info.Size(), accessed: info.ModTime()}
+		if dash := strings.LastIndexByte(entry.Name(), '-'); dash > 0 {
+			p.hexed = entry.Name()[:dash]
+			if indexed := l.entry.packs[p.hexed]; indexed != nil {
+				p.accessed, p.indexed = indexed.accessed, true
+			}
 		}
-		packs = append(packs, packed{path: path, size: info.Size()})
+		packs = append(packs, p)
 		total += info.Size()
 	}
+	// Oldest recency first. An entry outside the index was never served by
+	// this process and is not reachable through it; it goes before any
+	// indexed entry, oldest publish first.
 	sort.Slice(packs, func(i, j int) bool {
-		a, errA := os.Stat(packs[i].path)
-		b, errB := os.Stat(packs[j].path)
-		if errA != nil || errB != nil {
-			return packs[i].path < packs[j].path
+		a, b := packs[i], packs[j]
+		if a.indexed != b.indexed {
+			return !a.indexed
 		}
-		return a.ModTime().Before(b.ModTime())
+		if a.accessed.Equal(b.accessed) {
+			return a.path < b.path
+		}
+		return a.accessed.Before(b.accessed)
 	})
+	l.store.mu.Unlock()
+	for _, path := range staging {
+		_ = os.Remove(path)
+	}
 	var evicted, evictedBytes int64
+	var removed []packed
 	for _, p := range packs {
 		if total <= limit {
 			break
@@ -224,12 +279,23 @@ func (l *Lease) prunePacks(dir string, limit int64) {
 			total -= p.size
 			evicted++
 			evictedBytes += p.size
+			removed = append(removed, p)
 		}
 	}
-	if evicted > 0 {
-		l.store.Git.Logger().Info("response pack cache pruned", "cache_key", l.entry.key, "entries_evicted", evicted,
-			"evicted_bytes", evictedBytes, "remaining_bytes", total, "max_pack_cache_bytes", limit)
+	if evicted == 0 {
+		return
 	}
+	l.store.mu.Lock()
+	for _, p := range removed {
+		if indexed := l.entry.packs[p.hexed]; indexed != nil && indexed.size == p.size {
+			delete(l.entry.packs, p.hexed)
+			l.entry.size -= p.size
+			l.store.usedBytes -= p.size
+		}
+	}
+	l.store.mu.Unlock()
+	l.store.Git.Logger().Info("response pack cache pruned", "cache_key", l.entry.key, "entries_evicted", evicted,
+		"evicted_bytes", evictedBytes, "remaining_bytes", total, "max_pack_cache_bytes", limit)
 }
 
 func linkOrCopy(source, target string) error {
