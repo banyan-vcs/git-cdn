@@ -226,17 +226,17 @@ func TestPinProtectsScopeFromEviction(t *testing.T) {
 
 func TestEvictionSkipsBusyCandidate(t *testing.T) {
 	s := testStore(t, 100)
-	a := storedBytes(t, s, "a", 60) // least recent; removal fails
+	a := storedBytes(t, s, "a", 60) // least recent; moving it out fails
 	b := storedBytes(t, s, "b", 40)
 	busy := filepath.Join(s.Root, "repos", s.Key("a"))
-	previous := removeScope
-	removeScope = func(path string) error {
+	previous := evictScope
+	evictScope = func(path, trash string) error {
 		if path == busy {
 			return fmt.Errorf("scope is busy")
 		}
-		return previous(path)
+		return previous(path, trash)
 	}
-	t.Cleanup(func() { removeScope = previous })
+	t.Cleanup(func() { evictScope = previous })
 	c := testLease(t, s, "c")
 	err := publishBytes(t, c, 50)
 	require.Error(t, err)

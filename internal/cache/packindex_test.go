@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -140,6 +141,99 @@ func TestAccessStampsThrottleAndFlushAtClose(t *testing.T) {
 	afterA, afterB := stamp(filepath.Dir(a)), stamp(filepath.Dir(b))
 	require.False(t, afterA.Before(beforeA), "Close moved the stamp backwards")
 	require.Equal(t, beforeB, afterB, "Close flushed an unmodified scope")
+}
+
+// storeKeyedPack publishes payload under a key that is unique to id.
+func storeKeyedPack(t *testing.T, l *Lease, id byte, payload string) []byte {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "source")
+	require.NoError(t, os.WriteFile(source, []byte(payload), 0600))
+	key := make([]byte, 32)
+	key[31] = id
+	stored, err := l.StorePack(key, source)
+	require.NoError(t, err)
+	require.True(t, stored)
+	return key
+}
+
+// An entry stored under a shared reader lease enters the scope size and the
+// store budget at once — a reader never rescans its scope — and pruning,
+// a writer's rescan and an external removal each settle the bytes exactly
+// once.
+func TestStoredPacksEnterTheBudgetOnce(t *testing.T) {
+	s := testStore(t, 1<<20)
+	s.SetPackCacheBytes(1 << 20)
+	writer := testLease(t, s, "accounted")
+	scope := writer.entry.key
+	writer.Release()
+	base := s.Stats().Bytes
+	first := []byte("stored on the shared path")
+
+	shared, err := s.AcquireShared(context.Background(), scope)
+	require.NoError(t, err)
+	storeKeyedPack(t, shared, 1, string(first))
+	shared.Release()
+	require.EqualValues(t, base+int64(len(first)), s.Stats().Bytes, "a shared-path entry was not charged")
+
+	// A smaller per-scope budget prunes the older entry and returns its bytes.
+	s.SetPackCacheBytes(int64(len(first) + 3))
+	shared, err = s.AcquireShared(context.Background(), scope)
+	require.NoError(t, err)
+	secondKey := storeKeyedPack(t, shared, 2, "second")
+	shared.Release()
+	require.EqualValues(t, base+6, s.Stats().Bytes, "pruning did not return the evicted bytes")
+
+	// A writer's rescan keeps the remaining entry and does not count it twice.
+	exclusive := testLease(t, s, "accounted")
+	exclusive.Release()
+	require.EqualValues(t, base+6, s.Stats().Bytes, "a rescan disagreed with the index")
+
+	// An entry deleted from outside leaves the index and the budget on its
+	// next lookup, and a further rescan does not subtract it again.
+	entries, err := os.ReadDir(s.packDir(scope))
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.NoError(t, os.Remove(filepath.Join(s.packDir(scope), entries[0].Name())))
+	file, err := s.LookupPack(scope, secondKey)
+	require.NoError(t, err)
+	require.Nil(t, file)
+	require.EqualValues(t, base, s.Stats().Bytes, "a lost entry kept its bytes charged")
+	exclusive = testLease(t, s, "accounted")
+	exclusive.Release()
+	require.EqualValues(t, base, s.Stats().Bytes, "a rescan charged or refunded a lost entry twice")
+}
+
+// Within a scope the least recently served entry is pruned first, not the
+// oldest one: a long-lived entry that keeps being served outlives a newer
+// one nobody asked for.
+func TestPackPruningEvictsLeastRecentlyServed(t *testing.T) {
+	s := testStore(t, 1<<20)
+	s.SetPackCacheBytes(1 << 20)
+	l := testLease(t, s, "recency")
+	scope := l.entry.key
+	first := storeKeyedPack(t, l, 1, "first response body")
+	second := storeKeyedPack(t, l, 2, "second response body")
+	// Past the clock's resolution, so the touch is strictly later.
+	time.Sleep(20 * time.Millisecond)
+	file, err := s.LookupPack(scope, first)
+	require.NoError(t, err)
+	require.NotNil(t, file)
+	file.Close()
+	s.SetPackCacheBytes(int64(len("first response body") + len("third body")))
+	third := storeKeyedPack(t, l, 3, "third body")
+	l.Release()
+	entries, err := os.ReadDir(s.packDir(scope))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "pruning did not bring the directory within its budget")
+	file, err = s.LookupPack(scope, second)
+	require.NoError(t, err)
+	require.Nil(t, file, "the least recently served entry survived")
+	for _, key := range [][]byte{first, third} {
+		file, err = s.LookupPack(scope, key)
+		require.NoError(t, err)
+		require.NotNil(t, file, "a recently served entry was pruned")
+		file.Close()
+	}
 }
 
 func hexed(key []byte) string {
