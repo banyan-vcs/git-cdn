@@ -50,18 +50,21 @@ robots.txt, sitemap.xml, .nojekyll
 - **Editing a page**: open the HTML, edit, push. Both languages must be
   updated together (root ↔ `zh-cn/`) — the language switcher links them
   one-to-one.
-- **Facts come from the repository** — behavior claims from
-  `docs/design.md`, defaults from `README.md` / `config.example.yaml`,
-  counts (e.g. "101 test functions across 19 files") from the actual tree.
-  Never invent a number; when it changes in the repo, change it here in
-  both languages. There are no performance numbers on the site on purpose:
-  single-run timings are explicitly not baselines in `docs/testing.md`.
-- **Docs index** links to `blob/main/docs/…` and lists the seven documents
-  that exist on `main`. Add a row in both `docs.html` and `zh-cn/docs.html`
-  when a document lands.
-- **Architecture diagrams**: edit `assets/architecture.svg` and its
-  `.zh.svg` sibling together whenever the topology changes; keep the `alt`
-  texts in the two `index.html` files in sync with them.
+- **Facts come from the repository** — behavior claims from the
+  request/behavior table in `README.md` and from `docs/design.md`, defaults
+  from `docs/configuration.md` / `config.example.yaml`, counts (e.g. "208
+  test functions across 42 files") from the actual tree. Never invent a
+  number; when it changes in the repo, change it here in both languages.
+  There are no performance numbers on the site on purpose: single-run
+  timings are explicitly not baselines in `docs/testing.md`.
+- **Docs index** links to `blob/main/docs/…` and lists the nine documents
+  under `docs/`. Add a row in both `docs.html` and `zh-cn/docs.html` when a
+  document lands, and move the count in the heading and description.
+- **Architecture diagrams**: `assets/architecture.svg` and its `.zh.svg`
+  sibling are this site's copies of the pair in the repository's
+  `docs/assets/` — the same topology in this site's colors. When the
+  repository's diagrams change, carry the change into both copies and keep
+  the `alt` texts in the two `index.html` files in sync with them.
 - **Voice**: first-party assertions only, no slogan tails. The site renders
   identically offline — no web fonts, no CDN scripts, no analytics. Keep it
   that way.

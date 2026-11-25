@@ -14,7 +14,7 @@
         } catch (e) {}
       })();
     </script>
-<meta name="description" content="git-cdn 文档集：设计、缓存策略、SSH 代理、HTTP 安全、Docker、协议实验、配置与测试——主仓库中的八份文档。">
+<meta name="description" content="git-cdn 文档集：设计、缓存策略、SSH 代理、HTTP 安全、日志、Docker、协议实验、配置与测试——主仓库中的九份文档。">
 <link rel="icon" href="../assets/avatar.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/style.css">
 <script src="../assets/lang.js"></script>
@@ -40,7 +40,7 @@
   <div class="wrap">
     <div class="section-head">
       <span class="kicker">文档</span>
-      <h2>八份文档，一个仓库</h2>
+      <h2>九份文档，一个仓库</h2>
       <p class="lede">设计记录与代码放在一起——下面每份文档都是主仓库
       <code>docs/</code> 下的一个文件。
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/README.md">英文 README</a>
@@ -52,16 +52,19 @@
         <p>架构、鉴权边界、对象存储与补齐、容量与并发、响应交付及其权衡，附代码地图。</p></div></div>
       <div class="row"><div class="no">config</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/configuration.md">配置参考</a>
-        <p>全部配置项及默认值、单/多站点模式、请求限额、传输与 TLS、客户端凭据绑定。</p></div></div>
+        <p>全部配置项及默认值、单/多站点模式、鉴权探测、请求限额、响应 pack 缓存、传输与 TLS、出站代理与私有 CA、客户端凭据绑定。</p></div></div>
       <div class="row"><div class="no">cache</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/cache-policy.md">缓存策略</a>
-        <p>容量准入、LRU 与租约保护、引用存储与 reftable 迁移、pack 维护、不可达对象保留，以及 GitHub 不存在仓库的响应处理。</p></div></div>
+        <p>容量准入、LRU 与租约保护、引用存储与 reftable 迁移、pack 维护、不可达对象保留、响应 pack 缓存，以及 GitHub 不存在仓库的响应处理。</p></div></div>
       <div class="row"><div class="no">ssh</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/ssh.md">SSH 密码代理</a>
-        <p>SSH 前端的配置与运行、首次连接的 host key 自动登记、客户端凭据、Git 行为与 Git LFS 透传。</p></div></div>
+        <p>SSH 前端的配置与运行、首次连接的 host key 自动登记、客户端凭据与认证限速、Git 行为与 Git LFS 透传。</p></div></div>
       <div class="row"><div class="no">http</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/http-security.md">HTTP 安全</a>
         <p>准入与解析限制、响应暂存与重启恢复、传输配置、多上游凭据绑定。</p></div></div>
+      <div class="row"><div class="no">logging</div>
+        <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/logging.md">日志</a>
+        <p>仓库访问、鉴权探测、对象补齐、响应 pack 与维护的结构化 JSON 事件，各自携带的字段，以及永不记录的内容。</p></div></div>
       <div class="row"><div class="no">docker</div>
         <div><a class="title" href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/docker.md">Docker Compose</a>
         <p>容器快速启动：HTTP 配置、配置挂载、可选 SSH，以及命名卷的数据管理。</p></div></div>

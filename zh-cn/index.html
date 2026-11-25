@@ -148,30 +148,40 @@
       <span class="kicker">fetch 如何被服务</span>
       <h2>鉴权、校验、补齐、服务。</h2>
       <p class="lede">discovery 和客户端 <code>ls-refs</code> 始终发往原站。
-      want 为当前广播 OID 的 v2 fetch 可以在本地服务，分四步：</p>
+      want 为当前广播 OID 的 v2 fetch 可以在本地服务——shallow 与 filter
+      请求也一样——分四步：</p>
     </div>
     <div class="steps" style="margin-bottom:34px">
       <div class="card"><h3>鉴权</h3>
-        <p>用本次请求的凭据做一次新鲜的 <code>ls-refs</code>。原站
-        401/403/404 及其 challenge 原样透传；登录页不能授权缓存数据。</p></div>
+        <p>用本次请求的凭据做一次新鲜的 <code>ls-refs</code>。同一仓库、
+        同一凭据的并发探测合并为一次上游请求，等待者复用这份新鲜结果。
+        原站 401/403/404 及其 challenge 原样透传；登录页不能授权缓存
+        数据。</p></div>
       <div class="card"><h3>校验</h3>
-        <p>依赖遍历证明 wanted roots 是完整的。commit 存在而 blob 缺失
-        仍然算 miss——检查的是对象图，不是 refs。</p></div>
+        <p>依赖遍历证明 wanted roots 是完整的；大仓库先查 pinned-root
+        索引，落在已验证闭包内的 want 不需要再遍历。commit 存在而 blob
+        缺失仍然算 miss——检查的是对象图，不是 refs。</p></div>
       <div class="card"><h3>补齐</h3>
         <p>缺失的 roots 按精确 OID 拉入 staging，校验后连同 GC pins 一起
-        发布。已验证的旧 roots 通过 alternates 参与增量协商。</p></div>
+        发布；roots 列表走标准输入，带几千个 tag 的 clone 也只是一次
+        fetch。已验证的旧 roots 通过 alternates 参与增量协商。补齐失败后
+        仓库进入退避，不会每个请求都重试一遍。</p></div>
       <div class="card"><h3>服务</h3>
-        <p>请求专属的 refs 视图驱动本地 upload-pack。响应先落入有上限的
-        暂存文件，Git 成功退出后才传输——任何失败都回退为一次完整的
-        原站响应。</p></div>
+        <p>请求专属的 refs 视图在共享租约下驱动本地 upload-pack，同一
+        仓库的热 fetch 可以并行。响应先落入有上限的暂存文件，Git 成功
+        退出后才传输——任何失败都回退为一次完整的原站响应。</p></div>
     </div>
     <table class="matrix">
       <thead><tr><th>请求</th><th>行为</th></tr></thead>
       <tbody>
         <tr><td>discovery · ls-refs</td><td>实时代理原站，保留协议能力和 refs</td></tr>
         <tr><td>v2 fetch，want 是新鲜的 tip / tag / peeled OID</td><td>本地服务——上面的四步</td></tr>
-        <tr><td>have 协商</td><td>have 必须是已授权 roots 的祖先 commit；否则回源</td></tr>
-        <tr><td>shallow · filter · want-ref · 未知扩展 · SHA-256 · v0/v1</td><td>完整回源</td></tr>
+        <tr><td>v2 fetch 带 <code>deepen</code> 或 <code>filter</code></td><td>本地服务，同一路径——指令属于请求的一部分</td></tr>
+        <tr><td>have 协商</td><td>指向已授权历史内已缓存提交的 have 参与协商，其余的从请求里剥离</td></tr>
+        <tr><td>v2 fetch 带 <code>done</code>、没有 have</td><td>生成完的响应被存储，下一个相同的请求逐字复用（<code>X-GitCDN-Pack-Cache</code>）</td></tr>
+        <tr><td>want-ref · SHA-256 · v0/v1 · 未知扩展</td><td>完整回源</td></tr>
+        <tr><td>超过 4096 个 pkt-line 的命令</td><td>不解析、完整回源——refs 多过这个数的仓库照样能 clone，只是不经过缓存</td></tr>
+        <tr><td>代理无法解析的 refs 广告</td><td>fetch 回源；不会凭它从缓存服务任何对象</td></tr>
         <tr><td>push（receive-pack）· Git LFS 端点</td><td>完整回源，不缓存</td></tr>
       </tbody>
     </table>
@@ -184,7 +194,8 @@
         原站响应——HIT 针对对象，不是复用的 pack</div>
     </div>
     <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
-      这些行为由 19 个文件中的 101 个测试函数钉死，CI 带 race 检测运行，
+      这些行为由 42 个文件中的 208 个测试函数和 1 个 fuzz 入口钉死，CI
+      带 race 检测运行，
       用标准 Git 客户端驱动带认证的 <code>git http-backend</code>——
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>。</p>
   </div>
@@ -201,34 +212,73 @@
         <p>按原站 URL、仓库路径和对象格式共享，存放于
         <code>repos/&lt;hash&gt;/repo.git</code>。不同用户和轮换后的
         token 复用同一份对象；每次 fetch 仍用自己的凭据鉴权和补齐，
-        凭据只在请求内存中存活。</p></div>
+        凭据只在请求内存中存活。单上游模式下，HTTP 与 SSH 两个前端共用
+        一份。</p></div>
+      <div class="card"><h3><span class="glyph">▧</span>响应 pack 缓存</h3>
+        <p>clone 形状的 fetch——带 want、<code>done</code>、没有
+        have——生成完的响应被存储，下一个相同的请求逐字流式复用，键是
+        请求字节和实时 refs 快照。补齐、refs 视图和 upload-pack 全部
+        跳过，鉴权探测照常进行。每仓库 1 GiB，最近最少服务的先淘汰；
+        并发的相同 clone 共享一次生成、一次读取。</p></div>
+      <div class="card"><h3><span class="glyph">≡</span>shallow 与 filter，同样本地</h3>
+        <p><code>git clone --depth=1</code> 和
+        <code style="white-space:nowrap">--filter=blob:none</code> 的
+        fetch 与完整 clone 用同一份缓存：指令原样到达本地
+        upload-pack。代理自己保存的副本始终完整——永远不会是 shallow 或
+        partial。</p></div>
       <div class="card"><h3><span class="glyph">▤</span>是预算，不是配额</h3>
-        <p>仓库间默认 20&nbsp;GiB 的 LRU 预算。访问时间跨重启保留；活动
-        租约和排队请求保护其仓库；已淘汰的仓库可再次按需获取。</p></div>
+        <p>仓库间默认 20&nbsp;GiB 的 LRU 预算，响应 pack 也计入。访问
+        时间跨重启保留；活动租约和排队请求保护其仓库；已淘汰的仓库可
+        再次按需获取。淘汰先把仓库目录移开，再在后台删除内容，没有请求
+        需要等别的仓库的文件删完。</p></div>
       <div class="card"><h3><span class="glyph">⚙</span>守规矩的后台维护</h3>
-        <p>空闲仓库做 geometric repack，cruft GC 的保留窗口最短 14 天。
-        失败保留原 pack；容量不足跳过维护，不影响客户端响应。</p></div>
+        <p>空闲仓库做 geometric repack；cruft GC 的保留窗口最短 14 天，
+        有自己的时限，并顺带重建 commit-graph，让祖先判断停在
+        generation 边界。失败保留原 pack，按倍增退避重试；容量不足跳过
+        维护，不影响客户端响应。</p></div>
+      <div class="card"><h3><span class="glyph">⧗</span>先退避，再透传</h3>
+        <p>做不成的事不会每个请求都重试一遍。补齐失败、响应大到生成
+        不了、维护失败，各自进入退避——三十秒或一分钟起，倍增到一小
+        时——期间请求直接去原站，而不是等一次重复的尝试。超过并发或
+        速率上限的请求先排队最多一秒，然后才是 503，因为 git 不会重试
+        503。</p></div>
       <div class="card"><h3><span class="glyph">▦</span>原生 reftable</h3>
         <p>新建缓存、补齐 staging 和请求专属视图都用 reftable（Git
         2.45+）。已有 files 格式缓存继续可用；迁移是一行文档化的命令。</p></div>
       <div class="card"><h3><span class="glyph">⟳</span>修复，而不是重建</h3>
         <p>缺失的 blob 和 pack 由图遍历发现，按精确 OID 补齐。对象进入
-        staging、校验通过后发布——普通失败绝不删除整个缓存。</p></div>
+        staging、校验通过后发布——普通失败绝不删除整个缓存。后台会
+        对照实时快照整理 refs，快照不再提到的 roots 退入保留宽限期。</p></div>
+      <div class="card"><h3><span class="glyph">⑂</span>探测会合并</h3>
+        <p>每个本地服务的 fetch 都由一次带调用者凭据的实时上游
+        <code>ls-refs</code> 授权。同一仓库、同一凭据的并发探测合并为
+        一次上游请求，一个机群 clone 同一个仓库只花一次探测。
+        <code>auth_probe_cache_ttl</code> 可以让成功的探测在短时间内
+        复用——这是从实时到准实时的明确交换；拒绝的结果永不复用。</p></div>
       <div class="card"><h3><span class="glyph">⇉</span>单站点与多站点</h3>
         <p>一个上游用直接仓库路径，或用 <code>/site/…</code> 前缀在多个
         主机间选择。默认要求每站点独立凭据域名；Host 不匹配的带凭据请求
         直接 421，不回源。</p></div>
+      <div class="card"><h3><span class="glyph">⇥</span>出站走配置</h3>
+        <p>默认直连原站、用系统根证书校验，环境里的代理变量一律忽略。
+        <code>upstream_proxy</code> 让所有原站连接——探测、补齐和
+        SSH——经过一个 HTTP CONNECT 或 SOCKS5 代理；
+        <code>upstream_ca_file</code> 为 HTTPS 上游提供私有 CA。</p></div>
       <div class="card"><h3><span class="glyph">⚿</span>SSH 密码代理</h3>
         <p>可选前端终止 SSH，把相同的密码或 token 提交给原站。默认严格
         host key 校验，可选 <code>accept-new</code> 首次登记；只带公钥的
-        客户端被拒绝并收到说明 banner。</p></div>
+        客户端被拒绝并收到说明 banner。会话以静默计时，而不是按年龄
+        切断；同一仓库、同一密码的 refs 查询共用一条原站连接；一分钟内
+        发来二十个被拒密码的地址会被关闭五分钟，期间不去打扰原站。</p></div>
       <div class="card"><h3><span class="glyph">⇅</span>LFS 透传</h3>
         <p>Git LFS 鉴权和传输命令以受限的 download/upload 透传。保留原始
         endpoint 和对象签名 URL——LFS 数据留在原站的存储上。</p></div>
       <div class="card"><h3><span class="glyph">◍</span>默认可观测</h3>
         <p><code>/healthz</code> 与 <code>/metrics</code>：本地、补齐、
-        透传、鉴权拒绝计数，缓存字节数、淘汰、活动请求数。日志不含凭据
-        和原站 Git stderr。</p></div>
+        透传、鉴权拒绝计数，缓存字节数、淘汰、活动请求数。结构化 JSON
+        日志带着每个请求的缓存、pack 缓存和鉴权缓存结果，走过探测、补齐
+        和 pack 准备；<code>-log-level DEBUG</code> 加上原生 Git 命令和
+        排队时间。日志不含凭据和原站 Git stderr。</p></div>
     </div>
   </div>
 </section>
@@ -247,8 +297,8 @@
 <span class="c"># 默认多站点（github + gitlab），仅绑定回环地址：</span>
 git clone http://127.0.0.1:8080/github/git/git.git
 
-<span class="c"># 第一次 clone 补齐缓存，第二次在本地服务；
-# 每个 fetch 响应都带：</span>
+<span class="c"># 第一次 clone 补齐缓存并在本地服务（MISS），
+# 之后都是 HIT；每个 fetch 响应都带：</span>
 <span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># 之后是 HIT</span></code></pre>
       </div>
       <div>
@@ -257,13 +307,14 @@ git clone http://127.0.0.1:8080/github/git/git.git
 git config --global \
   url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 
-<span class="c"># 凭据提供给 CDN 域名，
-# 每次 fetch 由 CDN 转发给原站</span></code></pre>
+<span class="c"># 凭据提供给 CDN 域名，每次 fetch 由 CDN 转发给原站；
+# 改写同样作用于 push，CDN 会把 push 透传给上游</span></code></pre>
       </div>
       <div>
         <h3>从源码构建</h3>
-<pre><code>go build -o bin/git-cdn ./cmd/git-cdn
+<pre><code>mkdir -p ~/.git-cdn
 cp config.example.yaml ~/.git-cdn/config.yaml
+go build -o bin/git-cdn ./cmd/git-cdn
 ./bin/git-cdn   <span class="c"># 监听 127.0.0.1:8080</span>
 
 <span class="c"># 需要 Go 1.26+ 和 Git 2.45+（reftable、
@@ -278,12 +329,12 @@ cp config.example.yaml ~/.git-cdn/config.yaml
     <div class="section-head">
       <span class="kicker">架构</span>
       <h2>一个代理，两条路径。</h2>
-      <p class="lede">可缓存的 v2 fetch 走"鉴权 / 校验 / 补齐 / 服务"流水
-      线，背后是持久对象库；其余请求——discovery、push、shallow 与
-      filter、LFS——原样转发给原站。</p>
+      <p class="lede">可缓存的 v2 fetch——完整、shallow 与 filter——走
+      "鉴权 / 校验 / 补齐 / 服务"流水线，背后是持久对象库；其余请求——
+      discovery、push、want-ref、SHA-256、v0/v1、LFS——原样转发给原站。</p>
     </div>
     <figure class="arch">
-      <img src="../assets/architecture.zh.svg" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch 送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、shallow、filter 与 LFS 请求透传给原站" loading="lazy">
+      <img src="../assets/architecture.zh.svg" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch（含 shallow 与 filter）送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、want-ref、SHA-256、v0/v1 与 LFS 请求透传给原站" loading="lazy">
       <figcaption>完整的分层说明——鉴权边界、对象存储与补齐、容量与并发、
       响应交付——见
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">docs/design.md</a>。</figcaption>

@@ -153,33 +153,46 @@
       <h2>Authorize, verify, hydrate, serve.</h2>
       <p class="lede">Discovery and client <code>ls-refs</code> always go to
       the origin. A v2 fetch whose wants are currently advertised OIDs can
-      be served locally, in four steps:</p>
+      be served locally — shallow and filtered fetches included — in four
+      steps:</p>
     </div>
     <div class="steps" style="margin-bottom:34px">
       <div class="card"><h3>Authorize</h3>
         <p>A fresh <code>ls-refs</code> with this request's credentials.
-        Upstream 401/403/404 responses and their challenges pass through
-        unchanged; a login page cannot authorize cached data.</p></div>
+        Concurrent probes for one repository and credential merge into one
+        upstream request, and the waiters reuse that fresh result. Upstream
+        401/403/404 responses and their challenges pass through unchanged; a
+        login page cannot authorize cached data.</p></div>
       <div class="card"><h3>Verify</h3>
-        <p>Dependency traversal proves the wanted roots are complete. A
-        present commit with a missing blob is a miss — the check is on the
-        graph, not on refs.</p></div>
+        <p>Dependency traversal proves the wanted roots are complete; on a
+        large repository the pinned-root index answers first, and a want
+        inside a verified closure needs no walk. A present commit with a
+        missing blob is a miss — the check is on the graph, not on
+        refs.</p></div>
       <div class="card"><h3>Hydrate</h3>
         <p>Missing roots are fetched by exact OID into staging, validated,
-        then published with GC pins. Verified existing roots join
-        incremental negotiation through alternates.</p></div>
+        then published with GC pins; the root list travels on standard
+        input, so a clone with thousands of tags is one fetch. Verified
+        existing roots join incremental negotiation through alternates. A
+        hydration that fails backs the repository off instead of repeating
+        with every request.</p></div>
       <div class="card"><h3>Serve</h3>
-        <p>A request-specific ref view feeds local upload-pack. The response
-        spools to a bounded file and streams after Git exits — so any
-        failure falls back to one complete upstream response.</p></div>
+        <p>A request-specific ref view feeds local upload-pack under a shared
+        lease, so warm fetches of one repository run in parallel. The
+        response spools to a bounded file and streams after Git exits — so
+        any failure falls back to one complete upstream response.</p></div>
     </div>
     <table class="matrix">
       <thead><tr><th>Request</th><th>Behavior</th></tr></thead>
       <tbody>
         <tr><td>discovery · ls-refs</td><td>live upstream forwarding, capabilities and refs preserved</td></tr>
         <tr><td>v2 fetch, wants are fresh tip / tag / peeled OIDs</td><td>served locally — the four steps above</td></tr>
-        <tr><td>have negotiation</td><td>haves must be ancestor commits of authorized roots; otherwise upstream</td></tr>
-        <tr><td>shallow · filter · want-ref · unknown extensions · SHA-256 · v0/v1</td><td>forwarded upstream</td></tr>
+        <tr><td>v2 fetch with <code>deepen</code> or <code>filter</code></td><td>served locally, same path — the directives are part of the request</td></tr>
+        <tr><td>have negotiation</td><td>haves naming cached commits inside the authorized history are used; the others are dropped from the request</td></tr>
+        <tr><td>v2 fetch with <code>done</code> and no haves</td><td>its completed response is stored and reused verbatim by the next identical request (<code>X-GitCDN-Pack-Cache</code>)</td></tr>
+        <tr><td>want-ref · SHA-256 · v0/v1 · unknown extensions</td><td>forwarded upstream</td></tr>
+        <tr><td>command over 4096 pkt-lines</td><td>forwarded upstream unparsed — a repository with more refs than that still clones, only without the cache</td></tr>
+        <tr><td>advertisement the proxy cannot parse</td><td>the fetch is forwarded; nothing is served from the cache on its account</td></tr>
         <tr><td>push (receive-pack) · Git LFS endpoints</td><td>forwarded upstream, uncached</td></tr>
       </tbody>
     </table>
@@ -192,8 +205,8 @@
         an upstream response — HIT counts objects, not reused packs</div>
     </div>
     <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
-      The behavior is pinned by 101 test functions across 19 files,
-      race-enabled in CI, driving an authenticated
+      The behavior is pinned by 208 test functions across 42 files plus a
+      fuzz target, race-enabled in CI, driving an authenticated
       <code>git http-backend</code> with standard Git clients —
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>.</p>
   </div>
@@ -210,15 +223,44 @@
         <p>One store per upstream URL, repository path and object format, at
         <code>repos/&lt;hash&gt;/repo.git</code>. Different users and rotated
         tokens reuse the same objects; every fetch still authorizes and
-        hydrates with its own credentials, kept in request memory only.</p></div>
+        hydrates with its own credentials, kept in request memory only. In
+        single-upstream mode the HTTP and SSH frontends share one
+        store.</p></div>
+      <div class="card"><h3><span class="glyph">▧</span>Response pack cache</h3>
+        <p>A clone-shaped fetch — wants, <code>done</code>, no haves — has
+        its completed response stored, and the next identical request streams
+        it verbatim, keyed by the request bytes and the live ref snapshot.
+        Hydration, ref views and upload-pack are skipped; the authorization
+        probe still runs. One GiB per repository, least recently served
+        first, and concurrent identical clones share one generation and one
+        read.</p></div>
+      <div class="card"><h3><span class="glyph">≡</span>Shallow and filtered, still local</h3>
+        <p><code>git clone --depth=1</code> and
+        <code style="white-space:nowrap">--filter=blob:none</code> fetches
+        are served from the same cache as full clones: the directives reach
+        the local upload-pack unchanged. The proxy's own copies stay complete
+        — they are never shallow or partial.</p></div>
       <div class="card"><h3><span class="glyph">▤</span>A budget, not a quota</h3>
-        <p>A 20&nbsp;GiB default LRU budget across repositories. Access
-        times survive restarts; active leases and queued requests pin their
-        repositories; evicted repositories hydrate again on demand.</p></div>
+        <p>A 20&nbsp;GiB default LRU budget across repositories, response
+        packs included. Access times survive restarts; active leases and
+        queued requests pin their repositories; evicted repositories hydrate
+        again on demand. Eviction moves a repository aside and deletes its
+        contents in the background, so no request waits for another
+        repository's files.</p></div>
       <div class="card"><h3><span class="glyph">⚙</span>Maintenance that behaves</h3>
-        <p>Geometric repack on idle repositories, cruft GC with a 14-day
-        minimum retention window. Failures keep the existing packs;
-        capacity shortage skips maintenance without failing clients.</p></div>
+        <p>Geometric repack on idle repositories; cruft GC with a 14-day
+        minimum retention window and its own deadline, rebuilding the
+        commit-graph so ancestry checks stop at generation boundaries.
+        Failures keep the existing packs and are retried under a doubling
+        backoff; capacity shortage skips maintenance without failing
+        clients.</p></div>
+      <div class="card"><h3><span class="glyph">⧗</span>Back off, then pass through</h3>
+        <p>Work that cannot succeed is not repeated for every request. A
+        failed hydration, a response too large to generate and a failed
+        maintenance run each back off — thirty seconds or one minute, doubling
+        up to an hour — while requests go to the origin instead of waiting on
+        a repeat. Requests over the concurrency or rate limits queue for up
+        to one second before a 503, because Git does not retry one.</p></div>
       <div class="card"><h3><span class="glyph">▦</span>reftable-native</h3>
         <p>New caches, hydration staging and per-request views use reftable
         (Git 2.45+). Existing files-format caches keep working; conversion
@@ -226,17 +268,38 @@
       <div class="card"><h3><span class="glyph">⟳</span>Repair, not reclone</h3>
         <p>Missing blobs and packs are detected by graph traversal and
         fetched by exact OID. Objects land in staging, are validated, then
-        published — ordinary failures never delete the whole cache.</p></div>
+        published — ordinary failures never delete the whole cache. In the
+        background, roots the live snapshot no longer names retire into the
+        retention grace period.</p></div>
+      <div class="card"><h3><span class="glyph">⑂</span>Probes that merge</h3>
+        <p>Every local fetch is authorized by a live upstream
+        <code>ls-refs</code> with the caller's credentials. Concurrent probes
+        for one repository and credential collapse into one upstream request,
+        so a fleet cloning one repository costs a single probe.
+        <code>auth_probe_cache_ttl</code> optionally reuses a successful
+        probe for a short lifetime — an explicit trade from live to
+        near-live; denials are never reused.</p></div>
       <div class="card"><h3><span class="glyph">⇉</span>Single- and multi-site</h3>
         <p>One upstream with direct repository paths, or
         <code>/site/…</code> prefixes selecting between hosts. Per-site
         credential hosts by default; a credential-bearing request with the
         wrong Host gets 421 before the origin is contacted.</p></div>
+      <div class="card"><h3><span class="glyph">⇥</span>Configured egress</h3>
+        <p>Origins are reached directly and verified against the system
+        roots by default; proxy variables from the environment are ignored.
+        <code>upstream_proxy</code> routes every origin connection — probes,
+        hydration and SSH — through an HTTP CONNECT or SOCKS5 proxy, and
+        <code>upstream_ca_file</code> supplies a private CA for HTTPS
+        upstreams.</p></div>
       <div class="card"><h3><span class="glyph">⚿</span>SSH password proxy</h3>
         <p>An optional frontend terminates SSH and submits the same
         password or token to the origin. Strict host-key verification with
         optional <code>accept-new</code> enrollment; key-only clients are
-        rejected with an explanatory banner.</p></div>
+        rejected with an explanatory banner. Sessions are bounded by silence
+        rather than age; ref lookups for one repository and password share a
+        single origin connection, and an address that sends twenty rejected
+        passwords within a minute is closed off for five minutes without the
+        origin being asked.</p></div>
       <div class="card"><h3><span class="glyph">⇅</span>LFS passthrough</h3>
         <p>Git LFS authentication and transfer commands pass through with
         restricted download/upload. Original endpoints and signed object
@@ -244,7 +307,10 @@
       <div class="card"><h3><span class="glyph">◍</span>Observable by default</h3>
         <p><code>/healthz</code> and <code>/metrics</code>: local,
         hydration, passthrough and authorization-denial counters, cache
-        bytes, evictions, in-flight requests. Logs omit credentials and
+        bytes, evictions, in-flight requests. Structured JSON logs follow each
+        request through its probe, hydration and pack preparation with its
+        cache, pack-cache and auth-cache outcome; <code>-log-level DEBUG</code>
+        adds native Git commands and queue times. Logs omit credentials and
         upstream Git stderr.</p></div>
     </div>
   </div>
@@ -264,8 +330,9 @@
 <span class="c"># multi-site default (github + gitlab), loopback-bound:</span>
 git clone http://127.0.0.1:8080/github/git/git.git
 
-<span class="c"># the first clone hydrates the cache, the second is local;
-# every fetch response carries:</span>
+<span class="c"># the first clone hydrates the cache and is served locally
+# (MISS), the next ones are HIT; every fetch response
+# carries:</span>
 <span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># then HIT</span></code></pre>
       </div>
       <div>
@@ -274,13 +341,15 @@ git clone http://127.0.0.1:8080/github/git/git.git
 git config --global \
   url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 
-<span class="c"># credentials are provided for the CDN domain
-# and forwarded to the origin on every fetch</span></code></pre>
+<span class="c"># credentials are provided for the CDN domain and forwarded
+# to the origin on every fetch; the rewrite also covers
+# push, which the CDN forwards</span></code></pre>
       </div>
       <div>
         <h3>From source</h3>
-<pre><code>go build -o bin/git-cdn ./cmd/git-cdn
+<pre><code>mkdir -p ~/.git-cdn
 cp config.example.yaml ~/.git-cdn/config.yaml
+go build -o bin/git-cdn ./cmd/git-cdn
 ./bin/git-cdn   <span class="c"># listens on 127.0.0.1:8080</span>
 
 <span class="c"># needs Go 1.26+ and Git 2.45+ (reftable, protocol v2,
@@ -295,13 +364,13 @@ cp config.example.yaml ~/.git-cdn/config.yaml
     <div class="section-head">
       <span class="kicker">Architecture</span>
       <h2>One proxy, two paths.</h2>
-      <p class="lede">Cacheable v2 fetches run the authorize / verify /
-      hydrate / serve pipeline over a persistent object store; everything
-      else — discovery, push, shallow and filtered requests, LFS — is
-      forwarded to the origin untouched.</p>
+      <p class="lede">Cacheable v2 fetches — full, shallow and filtered —
+      run the authorize / verify / hydrate / serve pipeline over a
+      persistent object store; everything else — discovery, push, want-ref,
+      SHA-256, v0/v1, LFS — is forwarded to the origin untouched.</p>
     </div>
     <figure class="arch">
-      <img src="assets/architecture.svg" alt="git-cdn architecture: git and SSH clients reach the HTTP v2 frontend or the SSH password proxy; a routing and eligibility policy sends cacheable v2 fetches through authorization, verification, exact-OID hydration and local upload-pack over a persistent object cache with LRU, geometric repack and cruft GC, while push, shallow, filter and LFS requests pass through to the origin" loading="lazy">
+      <img src="assets/architecture.svg" alt="git-cdn architecture: git and SSH clients reach the HTTP v2 frontend or the SSH password proxy; a routing and eligibility policy sends cacheable v2 fetches, including shallow and filtered ones, through authorization, verification, exact-OID hydration and local upload-pack over a persistent object cache with LRU, geometric repack and cruft GC, while push, want-ref, SHA-256, v0/v1 and LFS requests pass through to the origin" loading="lazy">
       <figcaption>The full layer-by-layer map — authorization boundary,
       object storage and hydration, capacity and concurrency, response
       delivery — lives in
