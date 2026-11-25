@@ -59,8 +59,48 @@ func TestYAMLModeLoadingAndDefaults(t *testing.T) {
 			require.Equal(t, 32, c.RepackPackThreshold)
 			require.Equal(t, "2m", c.RepackTimeout)
 			require.Equal(t, "24h", c.GCInterval)
+			require.Equal(t, "30m", c.GCTimeout, "collection must not share the geometric repack deadline")
 			require.Equal(t, "336h", c.GCRetention)
+			require.Equal(t, "5m", c.GitTimeout, "the local deadline must leave room for packing after a fetch_timeout hydration")
 		})
+	}
+}
+
+// Egress is configured, never inherited: proxy variables from the
+// environment are ignored by the service, so the proxy and the private CA
+// are validated here and nowhere else.
+func TestOutboundProxyAndCAValidation(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	for _, test := range []struct {
+		proxy string
+		valid bool
+	}{
+		{"", true},
+		{"http://proxy.example:3128", true},
+		{"https://proxy.example", true},
+		{"socks5://proxy.example:1080", true},
+		{"socks5h://proxy.example:1080", true},
+		{"socks5://gitcdn:secret@proxy.example:1080", true},
+		{"http://proxy.example/", true},
+		{"ftp://proxy.example:21", false},
+		{"proxy.example:3128", false},
+		{"http://", false},
+		{"http://proxy.example:3128?x=1", false},
+		{"http://proxy.example:3128/path", false},
+	} {
+		c, err := loadYAML(t, "mode: single\nupstream:\n  url: https://example.com\nupstream_proxy: '"+test.proxy+"'\nupstream_ca_file: ~/certs/origin.pem\n")
+		if !test.valid {
+			require.Error(t, err, "proxy %q was accepted", test.proxy)
+			continue
+		}
+		require.NoError(t, err, "proxy %q was rejected: %v", test.proxy, err)
+		if test.proxy == "" {
+			require.Empty(t, c.UpstreamProxy)
+		} else {
+			require.Contains(t, c.UpstreamProxy, "://", "proxy %q lost its scheme", test.proxy)
+		}
+		require.Equal(t, filepath.Join(home, "certs", "origin.pem"), c.UpstreamCAFile, "the CA path did not expand ~")
 	}
 }
 
