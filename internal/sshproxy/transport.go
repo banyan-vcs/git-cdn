@@ -28,6 +28,9 @@ type origin struct {
 	sharedIdentity string
 	git            *nativegit.Runner
 	maxPack        int64
+	// proxy is the configured outbound proxy for origin connections, nil
+	// for a direct dial.
+	proxy *url.URL
 }
 type originSession struct {
 	client  *ssh.Client
@@ -48,7 +51,7 @@ func (o *origin) open(ctx context.Context, password []byte, command gitCommand, 
 			logging.Logger(ctx, o.git.Logger()).LogAttrs(ctx, slog.LevelDebug, "upstream SSH session opened", attrs...)
 		}
 	}()
-	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", o.settings.Address)
+	conn, err := dialOrigin(ctx, o.proxy, o.settings.Address)
 	if err != nil {
 		return nil, &originError{message: "origin SSH connection failed", reason: "ssh_connect", cause: err}
 	}
@@ -321,7 +324,7 @@ func (o *origin) identity() string {
 	return u.String() + ":sha1"
 }
 
-func makeOrigin(settings config.SSHUpstream, user, repo string, g *nativegit.Runner, maxPack int64) (*origin, error) {
+func makeOrigin(settings config.SSHUpstream, user, repo string, g *nativegit.Runner, maxPack int64, proxy *url.URL) (*origin, error) {
 	if settings.User != "" {
 		user = settings.User
 	}
@@ -336,5 +339,5 @@ func makeOrigin(settings config.SSHUpstream, user, repo string, g *nativegit.Run
 	if err != nil {
 		return nil, fmt.Errorf("cannot load origin SSH known_hosts")
 	}
-	return &origin{settings: settings, user: user, repo: repo, git: g, maxPack: maxPack}, nil
+	return &origin{settings: settings, user: user, repo: repo, git: g, maxPack: maxPack, proxy: proxy}, nil
 }
