@@ -16,19 +16,21 @@
 ## 架构
 
 <p align="center">
-  <img src="docs/assets/architecture.zh.svg" width="780" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch 送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、shallow、filter 与 LFS 请求透传给原站">
+  <img src="docs/assets/architecture.zh.svg" width="780" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch（含 shallow 与 filter）送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、want-ref、SHA-256、v0/v1 与 LFS 请求透传给原站">
 </p>
 
 discovery 和客户端 ls-refs 始终发往原站。want 为当前广播 OID 的 v2 fetch
-在本地执行：鉴权、校验依赖图、按精确 OID 补齐缺失 roots，再经有上限的响应
-暂存从本地 upload-pack 输出。其余请求原样转发。
+在本地执行，shallow 和 filter 请求也一样：鉴权、校验依赖图、按精确 OID
+补齐缺失 roots，再经有上限的响应暂存从本地 upload-pack 输出。其余请求原样
+转发。
 
 | 请求 | 行为 |
 | --- | --- |
 | discovery、ls-refs | 实时代理原站，保留协议能力和 refs |
 | v2 fetch，want 是新鲜的 tip / tag / peeled OID | 本地：鉴权 → 校验 → 补齐 → upload-pack |
-| have 协商 | have 必须是已授权 roots 的祖先；否则回源 |
-| shallow、filter、want-ref、SHA-256、v0/v1、未知扩展 | 完整回源 |
+| v2 fetch 带 `deepen` 或 `filter` | 本地，同一路径；指令属于请求的一部分 |
+| have 协商 | 指向已授权历史内已缓存提交的 have 参与协商，其余的从请求里剥离 |
+| want-ref、SHA-256、v0/v1、未知扩展 | 完整回源 |
 | push（receive-pack）、Git LFS 端点 | 完整回源，不缓存 |
 
 每个 fetch 响应都带 `X-GitCDN-Cache-Status`：`HIT`（所需对象已完整存在）、
@@ -109,7 +111,7 @@ go test -race ./...
 go vet ./...
 ```
 
-19 个文件中的 101 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
+42 个文件中的 208 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
 标准 Git 客户端驱动带认证的 `git http-backend` 运行 `go test -race`
 （[docs/testing.md](docs/testing.md)）。
 

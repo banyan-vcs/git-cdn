@@ -69,24 +69,27 @@ site prefix in multi-site mode.
 | `cache_dir` | `~/.git-cdn/caches` | Persistent objects, staging, response files, and the process lock |
 | `max_cache_bytes` | 20 GiB | Total logical file bytes across persistent repository cache scopes; idle scopes are evicted by LRU |
 | `repack_pack_threshold` | 32 | Queue idle repositories at or above this pack count; minimum 2 |
-| `repack_timeout` | 2m | Deadline for background repack and GC |
+| `repack_timeout` | 2m | Deadline for a background geometric repack |
 | `gc_interval` | 24h | Interval between successful garbage collections, independent of pack count |
+| `gc_timeout` | 30m | Deadline for a background garbage collection; a cruft repack rewrites every pack |
 | `gc_retention` | 336h | Minimum 14-day window for recent unreachable objects and removed-root histories |
 | `mode` | Inferred from upstream/upstreams | Direct paths for single; site-prefixed paths for multi |
 | `upstream` | Required for single | One fixed host with a `url` field |
 | `upstreams` | Required for multi | Site ID to upstream mapping |
+| `upstream_proxy` | none | Proxy for origin connections: `http`, `https`, `socks5` or `socks5h` URL; see [Outbound proxy and private CA](#outbound-proxy-and-private-ca) |
+| `upstream_ca_file` | system roots | PEM bundle that replaces the system roots for HTTPS upstream verification |
 | `max_request_bytes` | 8 MiB | Compressed and decompressed v2 upload-pack POST limit |
-| `max_refs_bytes` | 16 MiB | Internal ls-refs response limit |
-| `max_response_bytes` | 1 GiB | Local response spool limit; larger responses fall back |
+| `max_refs_bytes` | 16 MiB | Internal ls-refs response limit; a larger advertisement sends the fetch upstream |
+| `max_response_bytes` | 1 GiB | Local response spool limit; a larger response passes through and is not attempted again until its backoff passes |
 | `max_concurrent_git` | 4 | Native Git process concurrency |
 | `max_concurrent_requests` | 16 | Active Git requests, held through parsing, passthrough and response transfer |
-| `max_requests_per_second` | 64 | Instance-wide rate, with an initial burst of the same size |
+| `max_requests_per_second` | 64 | Instance-wide rate, with an initial burst of the same size; requests over it queue for up to one second |
 | `max_temp_response_bytes` | 4 GiB | Total bytes in unfinished local responses, released after file deletion |
 | `max_pack_cache_bytes` | 1 GiB | Per-repository budget for verbatim response-pack reuse; `0` applies the default, a negative value disables it |
-| `write_idle_timeout` | 30s | Deadline for each write/flush; progressing transfers refresh it |
-| `request_timeout` | 10m | Total Git request deadline, including input, origin access and transfer |
-| `fetch_timeout` | 2m | Deadline for each hydration operation |
-| `git_timeout` | 2m | Total local deadline, including queueing, validation, hydration, and packing |
+| `write_idle_timeout` | 30s | Deadline for each write/flush and for each read of a request body; progressing transfers refresh it |
+| `request_timeout` | 10m | Total Git request deadline over HTTP, including input, origin access and transfer. Over SSH it is the time without traffic or local work |
+| `fetch_timeout` | 2m | Deadline for each hydration operation; a hydration that fails or runs out of time backs the repository off before the next attempt |
+| `git_timeout` | 5m | Total local deadline, including queueing, validation, hydration, and packing |
 | `upstream_timeout` | 30s | Deadline for the live ref probe |
 | `auth_probe_cache_ttl` | 0s (disabled) | Lifetime for reusing a successful authorization probe; see [Authorization probes](#authorization-probes) |
 | `memory_limit_bytes` | 0 (disabled) | Go soft memory limit for the service process; the collector works harder near the limit instead of growing toward an out-of-memory kill. Bounds this process only — child Git processes and the on-disk budgets are unaffected |
@@ -125,41 +128,65 @@ probe rates at roughly one per repository and credential per interval.
 Only successful probes are reused; denials always re-probe, and a probe
 that has not yet completed still merges concurrent waiters. When enabled,
 `X-GitCDN-Auth-Cache: HIT|LIVE` on local responses reports the outcome.
+Entries expire on a timer once per lifetime — without waiting to be looked
+up again — and are bounded by count (8192) and by the total number of refs
+they hold (about one million), since each entry keeps a whole ref snapshot.
 The default `0s` keeps authorization fully live. For fleet-scale probe
 convergence across CDN nodes, see the edge/shield design discussion in the
 project's scaling notes.
 
 ## Request limits
 
-Each v2 command accepts at most 4096 pkt-lines without materializing a
-packet array. The local path handles up to 64 wants, 128 haves and 128
-current tags for include-tag requests; larger requests fall back upstream.
+Each v2 command is classified for at most 4096 pkt-lines without
+materializing a packet array. A longer command is forwarded upstream
+unparsed instead of being rejected: a default `git clone` sends one want per
+advertised ref, and repositories with more refs than that still clone, only
+without the cache. There is no smaller cap on wants, haves or tags — within
+the packet budget a fetch for every branch and tag of a large repository is
+served locally, and haves or tags that the cache cannot place inside the
+authorized history are dropped from the request rather than sent upstream.
 Gzip v2 requests are decoded for inspection and forwarded with their
 original compressed body; other encodings forward as-is. Canonical
 redirects within the trusted upstream base path are rewritten to the CDN.
-Git requests exceeding concurrency or rate limits return 503 with
-`Retry-After: 1` before input is read; health and metrics requests do not
-consume Git request slots.
+Git requests over the concurrency or rate limits queue for up to one
+second — Git does not retry a 503, so a short burst fails no clone — and
+return 503 with `Retry-After: 1` when capacity has not freed up by then.
+The queue holds one burst of waiting requests; requests beyond it are
+rejected at once. Health and metrics requests do not consume Git request
+slots. A client that stops sending its request body is disconnected after
+`write_idle_timeout`; there is no absolute limit on how long an upload may
+take while it keeps making progress.
 
 ## Response pack cache
 
 Clone-shaped requests — v2 fetches with wants, `done` and no haves, the
 shape CI clone storms produce — additionally reuse the generated response
-verbatim. The entry key binds the repository identity, the exact decoded
-request bytes and the live ref snapshot: a new tip, a new tag or different
-capabilities produce a different key and a fresh generation. Requests with
-client haves never enter the cache. Reuse skips hydration, ref views and
-upload-pack entirely; the live upstream authorization probe still runs for
-every request, and hits are served without taking the repository lock, so
-concurrent warm clones of one repository stream in parallel. Entries are
-self-contained files under the repository scope
-(`repos/<hash>/packcache/`): they count toward the persistent cache budget,
-survive restarts, and disappear with whole-scope LRU eviction. Within a
-scope, `max_pack_cache_bytes` (1 GiB by default, per repository) evicts the
-oldest entries first; responses larger than the budget are never retained.
+verbatim. The entry key binds the repository identity, the decoded request
+bytes and the live ref snapshot: a new tip, a new tag or different
+capabilities produce a different key and a fresh generation. The `agent`
+line is left out of the key, because the client's Git version does not
+change the response; clients on different versions or operating systems
+share one entry, and a fleet-wide Git upgrade no longer empties the cache.
+Requests with client haves never enter the cache. Reuse skips hydration,
+ref views and upload-pack entirely; the live upstream authorization probe
+still runs for every request, and hits are served without taking the
+repository lock, so concurrent warm clones of one repository stream in
+parallel. Entries are self-contained files under the repository scope
+(`repos/<hash>/packcache/`): they count toward the persistent cache budget
+as soon as they are stored, survive restarts, and disappear with
+whole-scope LRU eviction. Within a scope, `max_pack_cache_bytes` (1 GiB by
+default, per repository) evicts the least recently served entries first —
+in memory, so a long-lived hot entry outlives a freshly generated cold
+one; after a restart the publish order stands in until entries are served
+again. Responses larger than the budget are never retained.
 `X-GitCDN-Pack-Cache: HIT|MISS` on local responses reports the outcome, and
 `gitcdn_pack_cache_hits_total` / `gitcdn_pack_cache_stores_total` are
 exported on `/metrics`.
+
+A response that cannot be produced — larger than `max_response_bytes`, or
+slower than `git_timeout` — is not generated again for thirty seconds,
+doubling up to an hour for as long as it keeps failing. Requests for it
+pass through meanwhile instead of each repeating the failed packing.
 
 ## Transport and TLS
 
@@ -174,6 +201,29 @@ peers cannot bypass the check by supplying this header. Non-loopback
 upstreams require HTTPS. Use `allow_insecure_http: true` only on a
 controlled internal network. Full transport requirements and migration
 notes: [http-security.md](http-security.md).
+
+## Outbound proxy and private CA
+
+Connections to origins ignore proxy variables from the environment
+(`http_proxy`, `https_proxy`, `all_proxy`, `no_proxy`); egress follows the
+configuration only. `upstream_proxy` routes every origin connection through
+one proxy — HTTP and HTTPS upstreams, the Git child processes that hydrate
+objects, and SSH upstreams alike:
+
+```yaml
+upstream_proxy: http://proxy.example:3128
+# Credentials may be embedded: socks5://gitcdn:secret@proxy.example:1080
+upstream_ca_file: /etc/git-cdn/origin-ca.pem
+```
+
+HTTP proxies are crossed with `CONNECT` and SOCKS5 proxies with the
+standard handshake, with or without username/password authentication. A
+loopback origin is never sent through the proxy, as with proxy variables
+from the environment, so a local test origin keeps working.
+`upstream_ca_file` is a PEM bundle that replaces the system roots when an
+HTTPS upstream presents a certificate from a private authority; it applies
+to the service's own connections and to hydration. Neither setting changes
+how clients reach the CDN.
 
 ## Client credentials
 

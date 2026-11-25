@@ -77,7 +77,7 @@
   <g font-size="10.5" fill="#55636d" font-family="ui-monospace, Consolas, monospace">
     <text x="486" y="222">discovery · ls-refs</text>
     <text x="486" y="240">push (receive-pack)</text>
-    <text x="486" y="258">shallow · filter · v0/v1</text>
+    <text x="486" y="258">want-ref · SHA-256 · v0/v1</text>
     <text x="486" y="276">Git LFS endpoints</text>
   </g>
   <text x="486" y="293" font-size="9.5" fill="#8a97a0" font-family="ui-monospace, Consolas, monospace">forwarded, uncached</text>

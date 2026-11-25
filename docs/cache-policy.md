@@ -4,9 +4,9 @@
 
 `max_cache_bytes` defaults to 20 GiB. It accounts for regular-file lengths in managed `repos/<identity>/` repositories, including packs, indexes, refs and repository metadata. Authorized users share the same repository objects; one cache directory shares that budget across sites and repositories.
 
-Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Recency writes are throttled to one persisted stamp per scope per 30 seconds — in-memory recency always advances, a suppressed flush marks the scope dirty, and shutdown persists dirty stamps so a clean restart keeps the true last-touch ordering; after a crash the ordering is only as fresh as the last stamp. Active and queued leases pin their entry, including while staging reads its objects through alternates. Validation and pack generation hold shared reader leases: warm serving of one repository runs in parallel, hydration and maintenance hold the writer side, and waiting writers block fresh readers. Streams served from the response pack cache pin their scope without any lease and release the pin — refreshing recency — when the transfer ends, so an in-flight response cannot lose its scope mid-stream. A candidate whose removal fails is skipped and reported without aborting admission for the remaining candidates.
+Each scope has a persisted `.access` timestamp. Startup reconstructs size and recency, then trims old scopes if the configured budget is smaller than existing usage. Before publication, capacity is reserved and the oldest idle scopes are evicted. Recency writes are throttled to one persisted stamp per scope per 30 seconds — in-memory recency always advances, a suppressed flush marks the scope dirty, and shutdown persists dirty stamps so a clean restart keeps the true last-touch ordering; after a crash the ordering is only as fresh as the last stamp. Active and queued leases pin their entry, including while staging reads its objects through alternates. Validation and pack generation hold shared reader leases: warm serving of one repository runs in parallel, hydration and maintenance hold the writer side, and waiting writers block fresh readers. Streams served from the response pack cache pin their scope without any lease and release the pin — refreshing recency — when the transfer ends, so an in-flight response cannot lose its scope mid-stream. A candidate whose directory cannot be moved aside — a response still streaming on Windows holds its files — is skipped and reported without aborting admission for the remaining candidates. Eviction moves the directory under the store mutex and deletes its contents in the background, so no request waits for another repository's files to disappear.
 
-LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough.
+LRU removes whole repositories. An evicted repository hydrates again on demand. A repository larger than the budget or capacity pinned by active jobs uses upstream passthrough, and does not repeat the attempt for every request: a hydration that fails — out of time, out of capacity, refused — backs the repository off for thirty seconds, doubling up to an hour, and roots that are missing are not fetched again until that passes.
 
 Every locally served fetch reconciles cached refs against its complete live snapshot in the background — debounced by fingerprint drift or hydration accumulation, and running only while the scope is idle. Available complete roots are pinned and mapped to `refs/cache/upstream/`; roots the snapshot no longer names retire into the retention grace period, which bounds root accumulation for fleets that never stop at any advertised ref. Unrequested branches are not downloaded. Unpinning removes a retention ref, not an individual pack. Source refs and current requested roots still govern every response.
 
@@ -28,11 +28,13 @@ The service's newly created temporary repositories use reftable even when servin
 
 `repack_pack_threshold` defaults to 32 (minimum 2) and `repack_timeout` defaults to two minutes. A bounded background queue coalesces maintenance, and idle-only acquisition uses the existing repository gate. Active and waiting clients pin their repository. Maintenance also consumes the global native Git process limit.
 
-`git repack --geometric=2 -d` runs in a temporary copy with hardlinked immutable objects and copied metadata. New-file bytes have a capacity reservation and are checked every 200 ms and before publication. The staged pack set must have complete ref dependencies before new packs are installed and old packs are removed. Failed or timed-out generation preserves the existing pack set. Capacity shortages skip maintenance. A no-op or failure is retried on a later repository access rather than continuously requeued.
+`git repack --geometric=2 -d` runs in a temporary copy with hardlinked immutable objects and copied metadata. New-file bytes have a capacity reservation and are checked every 200 ms and before publication. The staged pack set must have complete ref dependencies before new packs are installed and old packs are removed. Failed or timed-out generation preserves the existing pack set. Capacity shortages skip maintenance. A failure is retried on a later repository access or scan once its backoff has passed: one minute after the first failure, doubling up to an hour. An attempt that a queued request cancels is neither a failure nor a success — it keeps its place in the schedule — so a busy repository does not accumulate backoff it never earned. The queue decides from the pack count recorded by the last writer; it does not list the directory while holding the store mutex.
 
 ## Unreachable-object retention
 
-`gc_interval` defaults to 24 hours. A minute-based maintenance scan also queues idle repositories whose persisted `.gc-last` is due; activity and queued leases prevent acquisition. GC does not depend on pack count and uses the same Git process and `repack_timeout` budgets. Successful runs advance `.gc-last`; failed/skipped attempts retry on later activity or a scan.
+`gc_interval` defaults to 24 hours. A minute-based maintenance scan also queues idle repositories whose persisted `.gc-last` is due; activity and queued leases prevent acquisition. GC does not depend on pack count and has its own deadline, `gc_timeout` (30 minutes by default), because a cruft repack rewrites every pack where a geometric repack touches a few; it shares the Git process limit. Successful runs advance `.gc-last`. Failed and capacity-skipped attempts retry on later activity or a scan under the same backoff as repack failures, instead of being restarted by every scan until they time out again.
+
+GC also rebuilds the commit-graph, the one pass that already touches every commit: `git commit-graph write --reachable` runs in staging and the file is installed by rename with the packs. Ancestry checks — client haves, include-tag targets and the pinned-root index — then stop at generation boundaries instead of walking whole histories. The graph's growth over the graph it replaces needs its own capacity reservation; when it does not fit, the repository keeps its previous graph or none, and stays correct either way.
 
 `gc_retention` defaults to 336 hours and cannot be shorter than 14 days. Cruft repack (`-a -d --cruft --cruft-expiration=<cutoff>`) and loose pruning run in a private repository. Recent unreachable objects and dependencies are retained using object mtimes and `.mtimes`; these are storage ages, not commit author/committer dates. Geometric repack excludes cruft packs, and publication includes their `.mtimes` sidecars.
 
@@ -51,20 +53,28 @@ repository identity, the exact decoded request bytes and the live ref
 snapshot, so a new tip or tag produces a new key. A hit streams the stored
 file without consulting repository objects, hydration or upload-pack; the
 per-request upstream authorization probe is unchanged. Entry bytes count
-toward the scope size and the persistent budget, and per-scope retention
-is bounded by `max_pack_cache_bytes` (oldest first, oversized responses
-never stored). An in-memory index maps each entry to its published size,
-so a warm lookup validates one file instead of scanning the directory;
-the index is rebuilt at startup, publication removes stale same-key
-files, and a mismatched or missing file drops out of the index and the
-directory so the next request regenerates. Concurrent identical requests
-collapse to one generation per entry — on a warm scope a shared-lease
-flight serializes the upload-pack run — and warm hits share one read of
-the entry through a bounded in-memory broadcast whose block buffers come
-from a pooled free list (drained by the collector under memory pressure)
-and whose slow consumers fall back to their own file reads. Startup also
-sweeps staging leftovers of interrupted publications under the directory
-lock. See [Configuration](configuration.md#response-pack-cache).
+toward the scope size and the persistent budget from the moment they are
+stored, whichever lease stored them: the in-memory index is the authority
+for those bytes, and a directory rescan adds the indexed sizes instead of
+counting the files again, so storing, pruning, invalidating and losing a
+file each adjust the budget exactly once. Per-scope retention is bounded by
+`max_pack_cache_bytes` (least recently served first; oversized responses
+never stored). Recency lives in memory — after a restart the publish order
+stands in until an entry is served again. An in-memory index maps each
+entry to its published size, so a warm lookup validates one file instead of
+scanning the directory; the index is rebuilt at startup, publication removes
+stale same-key files, and a mismatched or missing file drops out of the
+index and the directory so the next request regenerates. Concurrent
+identical requests collapse to one generation per entry — on a warm scope a
+shared-lease flight serializes the upload-pack run — and warm hits share
+one read of the entry through a bounded in-memory broadcast whose block
+buffers come from a pooled free list (drained by the collector under memory
+pressure) and whose slow consumers fall back to their own file reads. The
+broadcast's block pool follows the configured request and SSH concurrency,
+so raising those limits does not leave a fast stream waiting on a slow
+reader's slots. Startup also sweeps staging leftovers of interrupted
+publications under the directory lock. See
+[Configuration](configuration.md#response-pack-cache).
 
 ## Temporary storage
 
