@@ -20,21 +20,22 @@ authorized the request.
 ## Architecture
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" width="780" alt="git-cdn architecture: git and SSH clients reach the HTTP v2 frontend or the SSH password proxy; a routing and eligibility policy sends cacheable v2 fetches through authorization, verification, exact-OID hydration and local upload-pack over a persistent object cache with LRU, geometric repack and cruft GC, while push, shallow, filter and LFS requests pass through to the origin">
+  <img src="docs/assets/architecture.svg" width="780" alt="git-cdn architecture: git and SSH clients reach the HTTP v2 frontend or the SSH password proxy; a routing and eligibility policy sends cacheable v2 fetches, including shallow and filtered ones, through authorization, verification, exact-OID hydration and local upload-pack over a persistent object cache with LRU, geometric repack and cruft GC, while push, want-ref, SHA-256, v0/v1 and LFS requests pass through to the origin">
 </p>
 
 Discovery and client ls-refs always go to the origin. A v2 fetch whose
-wants are currently advertised OIDs runs locally: authorize, verify the
-dependency graph, hydrate missing roots by exact OID, then serve from
-local upload-pack through a bounded response spool. Everything else is
-forwarded untouched.
+wants are currently advertised OIDs runs locally, shallow and filtered
+fetches included: authorize, verify the dependency graph, hydrate missing
+roots by exact OID, then serve from local upload-pack through a bounded
+response spool. Everything else is forwarded untouched.
 
 | Request | Behavior |
 | --- | --- |
 | Discovery and ls-refs | Live upstream forwarding, capabilities and refs preserved |
 | v2 fetch, wants are fresh tip / tag / peeled OIDs | Local: authorize → verify → hydrate → upload-pack |
-| Have negotiation | Haves must be ancestors of authorized roots; otherwise upstream |
-| Shallow, filter, want-ref, SHA-256, v0/v1, unknown extensions | Forward upstream |
+| v2 fetch with `deepen` or `filter` | Local, same path; the directives are part of the request |
+| Have negotiation | Haves naming cached commits inside the authorized history are used; the others are dropped from the request |
+| want-ref, SHA-256, v0/v1, unknown extensions | Forward upstream |
 | Push (receive-pack), Git LFS endpoints | Forward upstream, uncached |
 
 Every fetch response carries `X-GitCDN-Cache-Status`: `HIT` (required
@@ -118,7 +119,7 @@ go test -race ./...
 go vet ./...
 ```
 
-101 test functions across 19 files plus a fuzz target; CI runs
+208 test functions across 42 files plus a fuzz target; CI runs
 `go test -race` on Linux and macOS against an authenticated
 `git http-backend` with standard Git clients ([docs/testing.md](docs/testing.md)).
 

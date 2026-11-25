@@ -26,7 +26,11 @@ go build -o bin/git-cdn ./cmd/git-cdn
 ./bin/git-cdn -config config.ssh.example.yaml
 ```
 
-HTTP and SSH run together. `ssh.listen` defaults to loopback port 2222, `ssh.max_connections` to 16, and `ssh.allowed_users` to `[git]`. Upstream `user` overrides the incoming SSH username; omitting it forwards an allowed incoming username. Each connection accepts at most four session channels. A 15-second handshake bound, the request deadline and the configured write idle timeout bound transport use. Quiet input while local hydration runs is bounded by the total request deadline.
+HTTP and SSH run together. `ssh.listen` defaults to loopback port 2222, `ssh.max_connections` to 16, and `ssh.allowed_users` to `[git]`. Upstream `user` overrides the incoming SSH username; omitting it forwards an allowed incoming username. Each connection accepts at most four session channels. A 15-second handshake bound, the request deadline and the configured write idle timeout bound transport use.
+
+Over SSH, `request_timeout` is a deadline on silence, not on age. Every byte read from or written to the connection restarts it, and client keepalives count; while the CDN hydrates or packs on the session's behalf — which produces no traffic — the clock stands still, because that work has its own deadlines. A clone of a large repository on a slow link is therefore not cut at a fixed age, and a client that goes silent is disconnected after the timeout.
+
+On a stop signal the SSH listener closes first and running sessions get fifteen seconds to finish, the same window HTTP responses get; what is still running then is closed. Origin connections follow `upstream_proxy` like every other origin connection (see [Configuration](configuration.md#outbound-proxy-and-private-ca)).
 
 Single mode uses a direct repository path. Multi mode has `ssh.upstreams.<site>` and a leading `site/` path component. `path_prefix` prepends a fixed origin path. Repository case and optional `.git` aliases are preserved and normalized. Both SCP-style and `ssh://` client URLs work; paths are validated and forwarded relative to the configured origin.
 
@@ -66,15 +70,17 @@ GIT_SSH_COMMAND='sshpass -f ~/.git-cdn/password ssh -p 2222' \
 
 SSH libraries can supply the password directly; neither the server nor the Go implementation depends on `sshpass`. No token issuer or platform-specific domain is built into Git CDN. The caller owns credential retrieval and refresh. An already established SSH connection cannot replace its password when a file changes; reconnect after renewal or expiry.
 
+Only the origin judges a password. A password it rejects is also the signal of a brute-force run, which the origin would otherwise see as coming from the CDN's own address — and lock out that address, and every user behind it. After twenty rejected passwords from one source address within a minute, the CDN closes that address's connections for five minutes without contacting the origin, and a connection attempted during the block restarts it. A successful authentication forgets the address's failures, so mistyped passwords do not add up. The bound is per source address: a large fleet sharing one address with an expired token is blocked like an attacker until the token is fixed.
+
 ## Git behavior
 
 The frontend accepts Git upload-pack and receive-pack commands, the LFS commands below, and the `GIT_PROTOCOL` environment request. Shell, PTY, arbitrary commands and forwarding channels are rejected. SSH transport acceptance is not repository authorization: the origin validates the password and selected repository operation before cache access. Invalid passwords, access denial and missing repositories never authorize local objects.
 
-V2 discovery and client ls-refs are relayed. A supported fetch with `done` can use local objects after a fresh, independent origin ls-refs query with the same password. Wanted roots, haves and tags use the existing local eligibility policy. Missing roots are fetched over a new SSH session and received with native `index-pack --fix-thin --strict`, then checked and published through the common cache. Native Git, HTTP, SSH and cache maintenance share the process budget and repository leases.
+V2 discovery and client ls-refs are relayed. A supported fetch with `done` can use local objects after a fresh origin ls-refs query with the same password. Sessions that ask for the same repository with the same password at the same time share one probe connection; each receives the leader's fresh result, so authorization stays live while a fleet cloning one repository costs a single probe. Wanted roots, haves and tags follow the HTTP eligibility policy: roots are fetched over a new SSH session and received with native `index-pack --fix-thin --strict`, then checked and published through the common cache. Native Git, HTTP, SSH and cache maintenance share the process budget and repository leases.
 
 Completed local responses spool before commitment, preserving fallback after generation failure. The SSH command then closes with a successful exit status, as native upload-pack does after a completed fetch. A negotiation-only fetch switches the remaining session to upstream passthrough; the proxy does not mix origin negotiation state with local state. Ordinary incremental Git fetch may take this path. A later complete clone can hydrate and reuse the updated cache.
 
-Shallow/filter/unknown extensions, unadvertised wants, unsupported haves, SHA-256, v0/v1 and push stay on the origin. Passthrough streams bidirectionally with stderr, EOF and exit status. Session framing is handled separately from the stateless HTTP frontend.
+Shallow and filtered fetches are served locally like any other supported fetch. Unknown extensions, unadvertised wants, SHA-256, v0/v1 and push stay on the origin; haves that name commits outside the cached, authorized history are dropped from the request instead of sending the whole fetch upstream. Passthrough streams bidirectionally with stderr, EOF and exit status. Session framing is handled separately from the stateless HTTP frontend.
 
 ## Git LFS
 

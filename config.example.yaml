@@ -9,6 +9,7 @@ max_cache_bytes: 21474836480 # 20 GiB, LRU across repository scopes
 repack_pack_threshold: 32
 repack_timeout: 2m
 gc_interval: 24h
+gc_timeout: 30m # A cruft repack rewrites every pack; separate from repack_timeout
 gc_retention: 336h # Minimum 14 days
 git_binary: git
 auth_headers: [Authorization]
@@ -23,8 +24,13 @@ max_pack_cache_bytes: 1073741824 # 1 GiB per repository for verbatim response re
 write_idle_timeout: 30s
 request_timeout: 10m
 fetch_timeout: 2m
-git_timeout: 2m
+git_timeout: 5m
 upstream_timeout: 30s
+
+# Origins are reached directly and verified against the system roots by default.
+# Proxy variables from the environment are ignored; egress is configured here only.
+# upstream_proxy: http://proxy.example:3128 # http, https, socks5 or socks5h; credentials may be embedded
+# upstream_ca_file: /etc/git-cdn/origin-ca.pem # private CA for HTTPS upstreams
 
 # To terminate HTTPS in this process, configure both:
 # tls_cert: /path/to/fullchain.pem
