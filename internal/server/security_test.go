@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -113,7 +114,9 @@ func (unreadBody) Read([]byte) (int, error) { panic("overload read a request bod
 func TestRequestOverloadRejectsBeforeBodyAndKeepsHealthAvailable(t *testing.T) {
 	f := newFixture(t)
 	s, _ := newCDN(t, f, func(c *config.Config) { c.MaxConcurrentRequests = 1 })
-	require.True(t, s.requests.acquire(time.Now()), "cannot acquire request slot")
+	// The queue wait is exercised separately; here the slot stays taken.
+	s.requests.wait = 0
+	require.True(t, s.requests.acquire(context.Background()), "cannot acquire request slot")
 	defer s.requests.release()
 	r := httptest.NewRequest("POST", "/gitlab/Group/Repo.git/git-upload-pack", unreadBody{})
 	r.RemoteAddr = "127.0.0.1:1234"
@@ -131,15 +134,66 @@ func TestRequestOverloadRejectsBeforeBodyAndKeepsHealthAvailable(t *testing.T) {
 	}
 }
 
+// Rate and concurrency limits are enforced without a wait; the handler
+// adds the bounded queue on top (TestRequestAdmissionQueuesForCapacity).
 func TestRequestRateLimitRefills(t *testing.T) {
 	l := newRequestLimiter(1, 2)
-	now := l.updated
+	l.wait = 0
+	ctx := context.Background()
 	for range 2 {
-		require.True(t, l.acquire(now), "initial burst rejected")
+		require.True(t, l.acquire(ctx), "initial burst rejected")
 		l.release()
 	}
-	require.False(t, l.acquire(now), "unbounded request burst")
-	require.True(t, l.acquire(now.Add(500*time.Millisecond)), "rate budget did not refill")
+	require.False(t, l.acquire(ctx), "unbounded request burst")
+	l.mu.Lock()
+	l.tokens += 1 // one 500ms refill step of a 2/s rate
+	l.mu.Unlock()
+	require.True(t, l.acquire(ctx), "rate budget did not refill")
+	l.release()
+}
+
+// Git never retries a 503. A request over the rate limit waits for the next
+// token instead of failing, but only within the admission wait and only if
+// it fits the waiting room.
+func TestRequestAdmissionQueuesForCapacity(t *testing.T) {
+	l := newRequestLimiter(4, 2)
+	l.wait = 2 * time.Second
+	require.True(t, l.acquire(context.Background()), "initial burst rejected")
+	require.True(t, l.acquire(context.Background()), "initial burst rejected")
+	l.release()
+	l.release()
+	started := time.Now()
+	require.True(t, l.acquire(context.Background()), "a token arriving inside the wait was not taken")
+	require.GreaterOrEqual(t, time.Since(started), 400*time.Millisecond, "admitted before a token accrued")
+	l.release()
+
+	l = newRequestLimiter(1, 1)
+	l.wait = 50 * time.Millisecond
+	require.True(t, l.acquire(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() { done <- l.acquire(ctx) }()
+	cancel()
+	select {
+	case admitted := <-done:
+		require.False(t, admitted, "a canceled waiter was admitted")
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "test failed", "a canceled waiter kept queueing")
+	}
+	l.release()
+
+	l = newRequestLimiter(1, 1)
+	l.wait = 50 * time.Millisecond
+	require.True(t, l.acquire(context.Background()))
+	// The waiting room holds one burst: a second request queues, a third
+	// is rejected at once.
+	queued := make(chan bool, 2)
+	go func() { queued <- l.acquire(context.Background()) }()
+	require.Eventually(t, func() bool { return len(l.queue) == 1 }, time.Second, time.Millisecond)
+	started = time.Now()
+	require.False(t, l.acquire(context.Background()), "queue admitted beyond one burst")
+	require.Less(t, time.Since(started), 20*time.Millisecond, "a request beyond the queue waited")
+	require.False(t, <-queued, "a waiter without capacity was admitted after its wait")
 	l.release()
 }
 

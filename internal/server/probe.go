@@ -15,9 +15,14 @@ import (
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
-// probeCacheLimit bounds credential-scoped probe entries; the map is
-// small metadata, and dropping entries only costs a fresh probe.
-const probeCacheLimit = 8192
+// probeCacheLimit bounds credential-scoped probe entries by count. Each
+// entry holds a whole ref snapshot — kilobytes for a small repository,
+// megabytes for one with many refs — so probeCacheRefs bounds the refs
+// held together as well.
+const (
+	probeCacheLimit = 8192
+	probeCacheRefs  = 1 << 20
+)
 
 // A probeCache collapses concurrent ls-refs authorization probes that share
 // a repository and credential into one upstream request, and optionally
@@ -36,6 +41,10 @@ type probeCache struct {
 	mu      sync.Mutex
 	entries map[string]probeEntry
 	flights map[string]*probeFlight
+	// refs totals the ref snapshots held by lifetime entries.
+	refs int
+	// stop ends the janitor that expires lifetime entries on its own.
+	stop chan struct{}
 }
 
 type probeEntry struct {
@@ -117,6 +126,7 @@ func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, r
 		if ok {
 			if now.After(entry.expires) {
 				delete(c.entries, key)
+				c.refs -= len(entry.snapshot.Refs)
 			} else {
 				c.mu.Unlock()
 				s.probeHits.Add(1)
@@ -171,25 +181,73 @@ func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, r
 }
 
 // rememberProbe stores a successful probe for the configured lifetime.
+// Entries past their count or ref budget are dropped; map order decides
+// which, which is enough for a cache whose entries all share one lifetime.
 func (s *Server) rememberProbe(key string, snapshot protocol.Snapshot) {
 	c := &s.probes
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.entries) >= probeCacheLimit {
-		now := time.Now()
+	now := time.Now()
+	if previous, ok := c.entries[key]; ok {
+		c.refs -= len(previous.snapshot.Refs)
+		delete(c.entries, key)
+	}
+	c.entries[key] = probeEntry{snapshot: snapshot, expires: now.Add(c.ttl)}
+	c.refs += len(snapshot.Refs)
+	for len(c.entries) > probeCacheLimit || c.refs > probeCacheRefs {
+		evicted := false
 		for k, entry := range c.entries {
-			if now.After(entry.expires) {
-				delete(c.entries, k)
-			}
-		}
-		for k := range c.entries {
-			if len(c.entries) < probeCacheLimit {
-				break
+			if k == key {
+				continue
 			}
 			delete(c.entries, k)
+			c.refs -= len(entry.snapshot.Refs)
+			evicted = true
+			break
+		}
+		if !evicted {
+			// One snapshot larger than the whole ref budget.
+			delete(c.entries, key)
+			c.refs -= len(snapshot.Refs)
+			break
 		}
 	}
-	c.entries[key] = probeEntry{snapshot: snapshot, expires: time.Now().Add(c.ttl)}
+}
+
+// startJanitor expires lifetime entries once per lifetime. Expiry used to
+// wait for a lookup of the same key or for the count limit: after a burst
+// across many repositories, every snapshot stayed in memory until one of
+// those happened, which for one-off repositories was never.
+func (c *probeCache) startJanitor() {
+	if c.ttl <= 0 {
+		return
+	}
+	c.stop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(max(c.ttl, time.Second))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.stop:
+				return
+			case now := <-ticker.C:
+				c.mu.Lock()
+				for key, entry := range c.entries {
+					if now.After(entry.expires) {
+						c.refs -= len(entry.snapshot.Refs)
+						delete(c.entries, key)
+					}
+				}
+				c.mu.Unlock()
+			}
+		}
+	}()
+}
+
+func (c *probeCache) stopJanitor() {
+	if c.stop != nil {
+		close(c.stop)
+	}
 }
 
 // replay materializes the flight's outcome for a waiter.

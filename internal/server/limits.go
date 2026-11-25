@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -10,25 +11,36 @@ import (
 	"time"
 )
 
+// admissionWait bounds how long a request queues for a slot or a rate
+// token. Git does not retry a 503, so a burst that is over the limits for
+// a fraction of a second would otherwise fail clones and CI jobs; the
+// waiting room holds one burst, which the rate can serve within the wait.
+const admissionWait = time.Second
+
 type requestLimiter struct {
-	slots   chan struct{}
+	slots chan struct{}
+	// queue is the waiting room: at most one burst waits, and requests
+	// beyond it are rejected at once instead of piling up connections.
+	queue   chan struct{}
 	mu      sync.Mutex
 	tokens  float64
 	rate    int
 	updated time.Time
+	// changed is closed and recreated on every release, waking waiters
+	// that queue for a slot.
+	changed chan struct{}
+	wait    time.Duration
 }
 
 func newRequestLimiter(concurrency, rate int) *requestLimiter {
-	return &requestLimiter{slots: make(chan struct{}, concurrency), tokens: float64(rate), rate: rate, updated: time.Now()}
+	return &requestLimiter{slots: make(chan struct{}, concurrency), queue: make(chan struct{}, rate), tokens: float64(rate), rate: rate, updated: time.Now(), changed: make(chan struct{}), wait: admissionWait}
 }
 
-func (l *requestLimiter) acquire(now time.Time) bool {
+// takeAcquire admits a request at once when both a token and a slot are free.
+func (l *requestLimiter) tryAcquire(now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if now.After(l.updated) {
-		l.tokens = min(float64(l.rate), l.tokens+now.Sub(l.updated).Seconds()*float64(l.rate))
-		l.updated = now
-	}
+	l.refillLocked(now)
 	if l.tokens < 1 {
 		return false
 	}
@@ -41,7 +53,63 @@ func (l *requestLimiter) acquire(now time.Time) bool {
 	}
 }
 
-func (l *requestLimiter) release()    { <-l.slots }
+func (l *requestLimiter) refillLocked(now time.Time) {
+	if now.After(l.updated) {
+		l.tokens = min(float64(l.rate), l.tokens+now.Sub(l.updated).Seconds()*float64(l.rate))
+		l.updated = now
+	}
+}
+
+// acquire admits a request, waiting up to the admission wait for capacity.
+// A ctx that ends while waiting — the client disconnected — gives up.
+func (l *requestLimiter) acquire(ctx context.Context) bool {
+	now := time.Now()
+	if l.tryAcquire(now) {
+		return true
+	}
+	select {
+	case l.queue <- struct{}{}:
+		defer func() { <-l.queue }()
+	default:
+		return false
+	}
+	deadline := now.Add(l.wait)
+	for {
+		now = time.Now()
+		if l.tryAcquire(now) {
+			return true
+		}
+		if !now.Before(deadline) {
+			return false
+		}
+		l.mu.Lock()
+		changed := l.changed
+		var wake <-chan time.Time
+		// Token-bound: wake when the next token has accrued. Slot-bound:
+		// only a release changes anything.
+		if l.tokens < 1 {
+			delay := time.Duration((1 - l.tokens) / float64(l.rate) * float64(time.Second))
+			timer := time.NewTimer(min(delay, time.Until(deadline)))
+			wake = timer.C
+			defer timer.Stop()
+		}
+		l.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		case <-wake:
+		}
+	}
+}
+
+func (l *requestLimiter) release() {
+	<-l.slots
+	l.mu.Lock()
+	close(l.changed)
+	l.changed = make(chan struct{})
+	l.mu.Unlock()
+}
 func (l *requestLimiter) active() int { return len(l.slots) }
 
 type responseBudget struct {
@@ -169,6 +237,11 @@ type idleResponseWriter struct {
 	ctx        context.Context
 	status     atomic.Int32
 	bytes      atomic.Int64
+	// writeErr is the first failed write to the client; upstreamErr is the
+	// first failed read of an upstream body streamed through the passthrough.
+	// ReverseProxy aborts on either without reporting which side failed.
+	writeErr    error
+	upstreamErr func() error
 }
 
 func (w *idleResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -181,6 +254,14 @@ func (w *idleResponseWriter) refreshWriteDeadline() error {
 		return nil
 	}
 	return err
+}
+
+// refreshReadDeadline bounds the next read of the request body. The server's
+// absolute read timeout is left off — it cut off large pushes that were
+// making progress — so a stalled or slow-feeding upload is bounded here by
+// the idle timeout instead, one deadline per read.
+func (w *idleResponseWriter) refreshReadDeadline() {
+	_ = w.controller.SetReadDeadline(time.Now().Add(w.timeout))
 }
 
 func (w *idleResponseWriter) WriteHeader(status int) {
@@ -198,7 +279,41 @@ func (w *idleResponseWriter) Write(p []byte) (int, error) {
 	w.status.CompareAndSwap(0, http.StatusOK)
 	n, err := w.ResponseWriter.Write(p)
 	w.bytes.Add(int64(n))
+	if err != nil && w.writeErr == nil {
+		w.writeErr = err
+	}
 	return n, err
+}
+
+// interrupted reports why a passthrough transfer was aborted after its
+// headers were committed: the side that failed — the client stopped
+// accepting, the upstream stopped sending — and, when neither reported an
+// error, the request deadline.
+func (w *idleResponseWriter) interrupted() (string, error) {
+	if w.writeErr != nil {
+		return "client_write", w.writeErr
+	}
+	if w.upstreamErr != nil {
+		if err := w.upstreamErr(); err != nil {
+			return "upstream_read", err
+		}
+	}
+	if w.ctx != nil && w.ctx.Err() != nil {
+		return "deadline", w.ctx.Err()
+	}
+	return "unknown", nil
+}
+
+// idleRequestBody refreshes the connection's read deadline before every
+// read; see refreshReadDeadline.
+type idleRequestBody struct {
+	io.ReadCloser
+	output *idleResponseWriter
+}
+
+func (b *idleRequestBody) Read(p []byte) (int, error) {
+	b.output.refreshReadDeadline()
+	return b.ReadCloser.Read(p)
 }
 
 func (w *idleResponseWriter) FlushError() error {

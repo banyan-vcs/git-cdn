@@ -12,13 +12,14 @@ import (
 // requester of the same pack key: the pump goroutine reads the file once and
 // distributes shared blocks to subscriber queues, so a fleet of identical
 // requests costs one disk read instead of one per response. Memory is hard
-// bounded: every block holds one slot of a fixed semaphore (fanoutPoolBlocks
-// x fanoutBlockSize), block buffers come from a pooled free list reused
-// across streams — and the pool is elastic: under a soft memory limit the
-// collector drains it instead of counting idle buffers against the budget —
-// while a subscriber whose bounded queue is full detaches and finishes by
-// reading the stored file itself from its own offset, which also keeps
-// detached transfers correct when the pump ends first.
+// bounded: every block holds one slot of a fixed semaphore (sized from the
+// configured stream limit, at least fanoutPoolBlocks x fanoutBlockSize),
+// block buffers come from a pooled free list reused across streams — and
+// the pool is elastic: under a soft memory limit the collector drains it
+// instead of counting idle buffers against the budget — while a subscriber
+// whose bounded queue is full detaches and finishes by reading the stored
+// file itself from its own offset, which also keeps detached transfers
+// correct when the pump ends first.
 const (
 	fanoutBlockSize  = 64 << 10
 	fanoutQueueDepth = 2
@@ -34,9 +35,13 @@ type fanoutRegistry struct {
 	workers  sync.WaitGroup
 }
 
-func (r *fanoutRegistry) init() {
+// init sizes the block pool for streams concurrent subscribers, each of
+// which may hold one block and queue fanoutQueueDepth more. With a fixed
+// pool, raising the request or SSH concurrency limits left a fast pump
+// stalling on slots held by slow readers.
+func (r *fanoutRegistry) init(streams int) {
 	r.active = make(map[string]*fanout)
-	r.slots = make(chan struct{}, fanoutPoolBlocks)
+	r.slots = make(chan struct{}, max(fanoutPoolBlocks, streams*(1+fanoutQueueDepth)))
 	r.buffers.New = func() any {
 		buffer := make([]byte, fanoutBlockSize)
 		return &buffer

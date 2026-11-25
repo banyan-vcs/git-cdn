@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -18,10 +21,15 @@ import (
 )
 
 type Server struct {
-	config           config.Config
-	git              *nativegit.Runner
-	store            *cache.Store
-	transport        *http.Transport
+	config    config.Config
+	git       *nativegit.Runner
+	store     *cache.Store
+	transport *http.Transport
+	// probeTransport serves authorization probes and GitHub metadata only.
+	// Passthrough streams — pushes, v0/v1 fetches — hold their connection
+	// for a whole transfer; sharing one pool let a burst of them queue
+	// every probe behind it until upstream_timeout.
+	probeTransport   *http.Transport
 	client           *http.Client
 	upstreams        map[string]*url.URL
 	githubAPI        *url.URL
@@ -38,6 +46,7 @@ type Server struct {
 	probes           probeCache
 	fanouts          fanoutRegistry
 	flights          flightCache
+	generations      generationFailures
 	rejected         atomic.Uint64
 	local            atomic.Uint64
 	hydrated         atomic.Uint64
@@ -70,27 +79,30 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	repackTimeout, _ := time.ParseDuration(c.RepackTimeout)
+	gcTimeout, _ := time.ParseDuration(c.GCTimeout)
 	gcInterval, _ := time.ParseDuration(c.GCInterval)
 	gcRetention, _ := time.ParseDuration(c.GCRetention)
-	store, err := cache.Open(c.CacheDir, git, c.MaxCacheBytes, cache.RepackOptions{PackThreshold: c.RepackPackThreshold, Timeout: repackTimeout, GCInterval: gcInterval, GCRetention: gcRetention})
+	store, err := cache.Open(c.CacheDir, git, c.MaxCacheBytes, cache.RepackOptions{PackThreshold: c.RepackPackThreshold, Timeout: repackTimeout, GCTimeout: gcTimeout, GCInterval: gcInterval, GCRetention: gcRetention})
 	if err != nil {
 		return nil, err
 	}
 	store.SetPackCacheBytes(c.MaxPackCacheBytes)
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = nil
-	t.DisableCompression = true
-	t.ResponseHeaderTimeout = 30 * time.Second
-	t.MaxConnsPerHost = c.MaxConcurrentRequests
+	transport, err := outboundTransport(c)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	probeTransport := transport.Clone()
 	s := &Server{
-		config:    c,
-		git:       git,
-		store:     store,
-		transport: t,
-		logger:    logger,
-		upstreams: make(map[string]*url.URL),
-		requests:  newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond),
-		responses: &responseBudget{limit: c.MaxTempResponseBytes},
+		config:         c,
+		git:            git,
+		store:          store,
+		transport:      transport,
+		probeTransport: probeTransport,
+		logger:         logger,
+		upstreams:      make(map[string]*url.URL),
+		requests:       newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond),
+		responses:      &responseBudget{limit: c.MaxTempResponseBytes},
 	}
 	s.gitTimeout, _ = time.ParseDuration(c.GitTimeout)
 	s.fetchTimeout, _ = time.ParseDuration(c.FetchTimeout)
@@ -98,7 +110,14 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	s.writeIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
 	s.requestTimeout, _ = time.ParseDuration(c.RequestTimeout)
 	s.probes.init(parseProbeTTL(c.AuthProbeCacheTTL))
-	s.fanouts.init()
+	// Every concurrent stream may hold one block and queue two more; the
+	// pool follows the configured concurrency so raising the limits does
+	// not leave a fast broadcast waiting on slow readers' slots.
+	streams := c.MaxConcurrentRequests
+	if c.SSH != nil {
+		streams += c.SSH.MaxConnections * sshSessionsPerConnection
+	}
+	s.fanouts.init(streams)
 	// A soft memory limit makes the collector work harder as the heap
 	// approaches it instead of growing into an out-of-memory kill. It
 	// bounds this process only; child Git processes have their own limits.
@@ -109,7 +128,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		_, network, _ := net.ParseCIDR(cidr)
 		s.trustedProxies = append(s.trustedProxies, network)
 	}
-	s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	s.client = &http.Client{Transport: s.probeTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.githubAPI, _ = url.Parse("https://api.github.com")
 	upstreams := c.Upstreams
 	if c.Mode == config.ModeSingle {
@@ -123,12 +142,60 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	}
 	sort.Strings(s.config.AuthHeaders)
 	s.proxyAllow = append(append([]string{}, proxyHeaders...), s.config.AuthHeaders...)
+	s.probes.startJanitor()
 	return s, nil
+}
+
+// sshSessionsPerConnection mirrors the SSH frontend's per-connection
+// session bound when its configuration is present.
+const sshSessionsPerConnection = 4
+
+// outboundTransport builds the origin transport. Environment proxy
+// variables stay ignored: egress follows configuration only, so a proxy or
+// a private CA is an explicit deployment decision and never a surprise
+// from the service user's shell.
+func outboundTransport(c config.Config) (*http.Transport, error) {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DisableCompression = true
+	t.ResponseHeaderTimeout = 30 * time.Second
+	t.MaxConnsPerHost = c.MaxConcurrentRequests
+	if c.UpstreamProxy != "" {
+		proxy, err := url.Parse(c.UpstreamProxy)
+		if err != nil {
+			return nil, fmt.Errorf("upstream_proxy: %w", err)
+		}
+		// http.ProxyURL would send every request to the proxy. A loopback
+		// origin shares the host with this process and is never proxied,
+		// as with proxy variables from the environment.
+		t.Proxy = func(request *http.Request) (*url.URL, error) {
+			if host := request.URL.Hostname(); host == "localhost" || net.ParseIP(host).IsLoopback() {
+				return nil, nil
+			}
+			return proxy, nil
+		}
+	}
+	if c.UpstreamCAFile != "" {
+		pem, err := os.ReadFile(c.UpstreamCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("upstream_ca_file: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("upstream_ca_file contains no PEM certificates")
+		}
+		// Keep the clone's protocol negotiation; only the roots change.
+		t.TLSClientConfig = t.TLSClientConfig.Clone()
+		t.TLSClientConfig.RootCAs = roots
+	}
+	return t, nil
 }
 
 // Close must be called after the HTTP server has stopped handling requests.
 func (s *Server) Close() error {
 	s.transport.CloseIdleConnections()
+	s.probeTransport.CloseIdleConnections()
+	s.probes.stopJanitor()
 	// Pumps stop and detach their subscribers, so in-flight transfers fall
 	// back to their own file reads instead of truncating.
 	s.fanouts.close()

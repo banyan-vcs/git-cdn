@@ -28,16 +28,21 @@ func githubTestServer(t *testing.T, metadata http.HandlerFunc) (*Server, *httpte
 	s, err := New(config.Config{CacheDir: t.TempDir(), Upstreams: map[string]config.Upstream{"github": {URL: "https://github.com"}}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	s.githubAPI, _ = url.Parse(api.URL)
-	dial := s.transport.DialContext
-	s.transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if address == "github.com:443" {
-			address = origin.Listener.Addr().String()
-		}
-		return dial(ctx, network, address)
-	}
-	s.transport.TLSClientConfig = origin.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	// Passthrough and probes use separate connection pools; both must
+	// reach the local GitHub stub.
+	tlsConfig := origin.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	// Only this local GitHub stub uses a certificate issued for another hostname.
-	s.transport.TLSClientConfig.InsecureSkipVerify = true
+	tlsConfig.InsecureSkipVerify = true
+	for _, transport := range []*http.Transport{s.transport, s.probeTransport} {
+		dial := transport.DialContext
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if address == "github.com:443" {
+				address = origin.Listener.Addr().String()
+			}
+			return dial(ctx, network, address)
+		}
+		transport.TLSClientConfig = tlsConfig.Clone()
+	}
 	h := httptest.NewServer(s)
 	t.Cleanup(func() { h.Close(); s.Close(); api.Close(); origin.Close() })
 	return s, h

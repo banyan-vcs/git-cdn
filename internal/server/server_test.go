@@ -19,6 +19,7 @@ import (
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 
 	"github.com/stretchr/testify/require"
 )
@@ -175,6 +176,10 @@ func TestConcurrentMissHasOneHydration(t *testing.T) {
 	require.EqualValues(t, 6, s.local.Load(), "concurrent miss: hydration=%d local=%d", s.hydrated.Load(), s.local.Load())
 }
 
+// An origin that answers the probe with 200 but not a Git advertisement
+// authorizes nothing: cached objects are not served, and the fetch itself
+// passes through to that origin instead of failing with 502 — the same
+// client reaches the same origin directly.
 func TestInvalidProbeCannotServeCache(t *testing.T) {
 	f := newFixture(t)
 	s, h := newCDN(t, f, nil)
@@ -187,7 +192,64 @@ func TestInvalidProbeCannotServeCache(t *testing.T) {
 	u, _ := url.Parse(bad.URL)
 	s.upstreams["gitlab"] = u
 	r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil)
-	require.EqualValues(t, 502, r.StatusCode, "HTML 200 accepted as Git authorization")
+	require.EqualValues(t, 200, r.StatusCode, "HTML 200 answer to the probe did not pass through: %d", r.StatusCode)
+	require.EqualValues(t, "BYPASS", r.Header.Get("X-GitCDN-Cache-Status"), "unparseable authorization allowed a cached response")
+	require.Equal(t, "<html>sign in</html>", string(responseBody(t, r)))
+	require.EqualValues(t, 1, s.local.Load(), "cached data was served without an authorization snapshot")
+}
+
+// An advertisement the parser cannot read — here an attribute from a newer
+// protocol — and one larger than max_refs_bytes both send the fetch
+// upstream instead of answering 502.
+func TestUnusableProbeAdvertisementPassesThrough(t *testing.T) {
+	injectAttribute := func(f *fixture) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("User-Agent") != "git-cdn/0.1" {
+				f.origin.Config.Handler.ServeHTTP(w, r)
+				return
+			}
+			recorded := httptest.NewRecorder()
+			f.origin.Config.Handler.ServeHTTP(recorded, r)
+			packets, err := protocol.Decode(recorded.Body.Bytes())
+			require.NoError(t, err)
+			var body []byte
+			for _, packet := range packets {
+				if packet.Control != -1 {
+					body = append(body, []byte(fmt.Sprintf("%04x", packet.Control))...)
+					continue
+				}
+				if strings.Contains(string(packet.Data), " HEAD ") {
+					packet.Data = []byte(strings.TrimSuffix(string(packet.Data), "\n") + " future-attribute:1\n")
+				}
+				body = append(body, protocol.Encode(string(packet.Data))...)
+			}
+			for name, values := range recorded.Header() {
+				w.Header()[name] = values
+			}
+			w.WriteHeader(recorded.Code)
+			w.Write(body)
+		}
+	}
+	for _, test := range []struct {
+		name   string
+		modify func(*testing.T, *fixture, *config.Config)
+	}{
+		{"unknown attribute", func(t *testing.T, f *fixture, c *config.Config) {
+			wrapped := httptest.NewServer(injectAttribute(f))
+			t.Cleanup(wrapped.Close)
+			c.Upstreams["gitlab"] = config.Upstream{URL: wrapped.URL + "/root"}
+		}},
+		{"oversized", func(t *testing.T, f *fixture, c *config.Config) { c.MaxRefsBytes = 48 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			_, h := newCDN(t, f, func(c *config.Config) { test.modify(t, f, c) })
+			r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip), testAuthorization, nil)
+			require.EqualValues(t, 200, r.StatusCode, "unusable advertisement did not pass through: %d", r.StatusCode)
+			require.EqualValues(t, "BYPASS", r.Header.Get("X-GitCDN-Cache-Status"))
+			require.Contains(t, string(responseBody(t, r)), "packfile\n")
+		})
+	}
 }
 
 func TestNoCredentialsInPersistentCache(t *testing.T) {
@@ -339,8 +401,9 @@ func TestRepositoryLRUEvictsAndRefetches(t *testing.T) {
 	}
 	request("Group", "MISS")
 	firstSize := s.store.Stats().Bytes
-	// Measure the fixture first, then use a separate store that fits two scopes.
-	s, h = newCDN(t, f, func(c *config.Config) { c.MaxCacheBytes = firstSize*2 + 4096 })
+	// Measure the fixture first, then use a separate store that fits two
+	// scopes and no third.
+	s, h = newCDN(t, f, func(c *config.Config) { c.MaxCacheBytes = firstSize*2 + firstSize/2 })
 	request("Group", "MISS")
 	request("Other", "MISS")
 	request("Group", "HIT")

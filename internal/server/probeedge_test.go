@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,23 +103,44 @@ func TestProbeCacheEntryBound(t *testing.T) {
 	require.LessOrEqual(t, size, probeCacheLimit, "entry bound exceeded: %d", size)
 }
 
-// The tag validation budget applies on both serving paths: an over-budget
-// include-tag request falls back upstream instead of validating locally.
-func TestIncludeTagBudgetFallsBackUpstream(t *testing.T) {
+// A repository with many tags keeps fetching from the cache. The tags an
+// include-tag response may carry are decided in one batch with no cap on
+// their number, and annotated tags that sit behind the want become roots of
+// their own. An ordinary `git fetch` after the upstream moves — one new
+// commit wanted, the client holding the history, include-tag set — is
+// served locally end to end.
+func TestManyTagsStayOnLocalPath(t *testing.T) {
 	f := newFixture(t)
+	first := f.tip
+	f.commit(t, "second")
+	testGit(t, f.work, "push", "--quiet", f.repo, "main")
 	var updates bytes.Buffer
 	for i := range 130 {
-		fmt.Fprintf(&updates, "create refs/tags/bulk-%03d %s\n", i, f.tip)
+		fmt.Fprintf(&updates, "create refs/tags/bulk-%03d %s\n", i, first)
 	}
 	cmd := exec.Command("git", "-C", f.repo, "update-ref", "--stdin")
 	cmd.Stdin = &updates
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "bulk tags: %s", out)
+	for i := range 3 {
+		testGit(t, f.work, "tag", "-a", "-m", "annotated", fmt.Sprintf("annotated-%d", i), first)
+	}
+	testGit(t, f.work, "push", "--quiet", f.repo, "--tags")
 	s, h := newCDN(t, f, nil)
-	body := fetchBody(f.tip, "include-tag")
-	r := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil)
-	payload := responseBody(t, r)
-	require.EqualValues(t, "BYPASS", r.Header.Get("X-GitCDN-Cache-Status"), "over-budget tags were validated locally")
-	require.EqualValues(t, 0, s.local.Load())
-	require.NotEmpty(t, payload)
+	client := filepath.Join(t.TempDir(), "client")
+	cloneURL := h.URL + "/gitlab/Group/Repo.git"
+	testGit(t, "", "clone", "--quiet", "--single-branch", "--no-tags", cloneURL, client)
+	require.EqualValues(t, 1, s.local.Load(), "the clone of a many-tag repository bypassed the cache")
+	// The clone's include-tag response already carries the tag objects;
+	// a real fetch needs something new from the upstream.
+	f.commit(t, "third")
+	testGit(t, f.work, "push", "--quiet", f.repo, "main")
+	local, proxied := s.local.Load(), s.proxied.Load()
+	testGit(t, client, "fetch", "--quiet", "--tags", "origin")
+	// v1, 130 lightweight and 3 annotated tags all point into history the client already has.
+	require.Len(t, strings.Fields(testGit(t, client, "tag")), 134, "tags were not fetched")
+	require.Equal(t, f.tip, testGit(t, client, "rev-parse", "origin/main"), "fetch did not reach the new tip")
+	// Discovery and ls-refs pass through; the fetch itself is served locally.
+	require.Equal(t, local+1, s.local.Load(), "the tag fetch bypassed the cache")
+	require.Equal(t, proxied+2, s.proxied.Load(), "the fetch request itself was forwarded")
 }
