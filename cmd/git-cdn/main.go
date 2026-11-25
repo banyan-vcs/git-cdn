@@ -27,6 +27,10 @@ func main() {
 	}
 }
 
+// shutdownGrace bounds how long in-flight work may finish after a stop
+// signal. HTTP responses and SSH sessions get the same window.
+const shutdownGrace = 15 * time.Second
+
 func run(logger *slog.Logger) error {
 	path := flag.String("config", config.DefaultConfigPath, "Path to the YAML configuration")
 	flag.Parse()
@@ -53,7 +57,13 @@ func run(logger *slog.Logger) error {
 		}
 		defer sshServer.Close()
 		defer sshListener.Close()
-		go func() { <-ctx.Done(); sshListener.Close(); sshServer.Close() }()
+		go func() {
+			<-ctx.Done()
+			// Stop accepting first, then give running clones the same
+			// grace the HTTP server gets before they are cut off.
+			sshListener.Close()
+			sshServer.Drain(shutdownGrace)
+		}()
 		go func() {
 			if err := sshServer.Serve(sshListener); err != nil && !errors.Is(err, net.ErrClosed) {
 				logger.Error("SSH listener failed")
@@ -62,7 +72,11 @@ func run(logger *slog.Logger) error {
 		}()
 		logger.Info("git CDN SSH listening", "address", sshListener.Addr().String())
 	}
-	httpServer := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, IdleTimeout: 2 * time.Minute, BaseContext: func(_ net.Listener) context.Context { return ctx }}
+	// No absolute ReadTimeout: it bounded the whole request including a
+	// push body, so an upload that took longer than it was cut off while
+	// still making progress. Headers keep their own deadline, and the
+	// handler bounds each request-body read by the idle timeout instead.
+	httpServer := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, BaseContext: func(_ net.Listener) context.Context { return ctx }}
 	listener, err := net.Listen("tcp", c.Listen)
 	if err != nil {
 		return err
@@ -72,7 +86,7 @@ func run(logger *slog.Logger) error {
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		shutdown, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdown); err != nil {
 			httpServer.Close()

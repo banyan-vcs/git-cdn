@@ -150,6 +150,6 @@ func TestLFSRoutingAndInvalidCommandsDoNotReachOrigin(t *testing.T) {
 	require.Equal(t, before, f.passwordAttempts.Load())
 	upstream := f.server.cfg.SSH.Upstreams["site"]
 	upstream.PathPrefix = ""
-	_, err = makeOrigin(upstream, "git", "-repo.git", f.server.git, 0)
+	_, err = makeOrigin(upstream, "git", "-repo.git", f.server.git, 0, nil)
 	require.Error(t, err, "a site prefix must not hide a leading Git option")
 }

@@ -57,7 +57,10 @@ type sshFixture struct {
 	denied                           atomic.Bool
 	connections                      atomic.Int64
 	passwordAttempts                 atomic.Int64
-	lfs                              func(ssh.Channel, gitCommand) uint32
+	// delay is the nanoseconds each origin connection waits before its
+	// handshake; see the accept loop.
+	delay atomic.Int64
+	lfs   func(ssh.Channel, gitCommand) uint32
 }
 
 func newSSHFixture(t *testing.T, configure ...func(*config.Config)) *sshFixture {
@@ -102,6 +105,11 @@ func newSSHFixtureOptions(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32
 				defer workers.Done()
 				defer conn.Close()
 				defer func() { mu.Lock(); delete(connections, conn); mu.Unlock() }()
+				// delay holds each origin connection before its handshake,
+				// widening the window in which concurrent lookups overlap.
+				if d := f.delay.Load(); d > 0 {
+					time.Sleep(time.Duration(d))
+				}
 				cfg := &ssh.ServerConfig{PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 					f.passwordAttempts.Add(1)
 					if f.denied.Load() || string(password) != "fixture-token" {
@@ -209,7 +217,9 @@ func (f *sshFixture) git(t *testing.T, dir string, args ...string) string {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "protocol.version=2"}, args...)...)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
-	cmd.Env = nativegit.Environment(map[string]string{"GIT_SSH_COMMAND": "ssh -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + f.known + " -o PubkeyAuthentication=no -o PreferredAuthentications=password", "SSH_ASKPASS": f.askpass, "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "git-cdn-test"})
+	// Git runs GIT_SSH_COMMAND through a shell, where a backslash is an
+	// escape: the path must use forward slashes on every platform.
+	cmd.Env = nativegit.Environment(map[string]string{"GIT_SSH_COMMAND": "ssh -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + filepath.ToSlash(f.known) + " -o PubkeyAuthentication=no -o PreferredAuthentications=password", "SSH_ASKPASS": filepath.ToSlash(f.askpass), "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "git-cdn-test"})
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))

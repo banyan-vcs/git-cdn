@@ -154,7 +154,7 @@ func TestAlgorithmSelectionDoesNotEnrollUnrelatedKey(t *testing.T) {
 	signer, _ := hostKey(t, t.TempDir(), "key")
 	data := []byte(knownhosts.Line([]string{"other.example"}, signer.PublicKey()) + "\n")
 	require.NoError(t, os.WriteFile(settings.KnownHosts, data, 0600))
-	o, err := makeOrigin(settings, "git", "repo.git", nil, 0)
+	o, err := makeOrigin(settings, "git", "repo.git", nil, 0, nil)
 	require.NoError(t, err)
 	require.Empty(t, o.trustedAlgorithms(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22}))
 	after, err := os.ReadFile(settings.KnownHosts)
