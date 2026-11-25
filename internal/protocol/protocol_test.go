@@ -162,30 +162,58 @@ func TestFetchPacketAndObjectCountsAreBounded(t *testing.T) {
 		_, err := Decode([]byte(strings.Repeat("0004", MaxCommandPackets+1)))
 		require.Error(t, err, "unbounded packet list accepted")
 	}
-	data := append(Encode("command=fetch\n"), "0001"...)
-	data = append(data, []byte(strings.Repeat("0004", MaxCommandPackets))...)
-	data = append(data, "0000"...)
-	{
-		_, err := ParseFetch(data)
-		require.Error(t, err, "unbounded command accepted")
-	}
+	// Selection size follows the packet budget: a default clone wants every
+	// advertised ref, so no smaller cap may push it upstream.
 	for _, test := range []struct {
-		field                   string
-		count, wantCap, haveCap int
-	}{
-		{"want " + strings.Repeat("a", 40), 65, 64, 0},
-		{"have " + strings.Repeat("a", 40), 129, 0, 128},
-	} {
+		field string
+		count int
+	}{{"want " + strings.Repeat("a", 40), 5000}, {"have " + strings.Repeat("a", 40), 5000}} {
 		lines := make([]string, test.count)
 		for i := range lines {
 			lines[i] = test.field
 		}
 		parsed, err := ParseFetch(request(lines...))
-		require.NoError(t, err, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
-		require.False(t, parsed.Supported, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
-		require.Len(t, parsed.Wants, test.wantCap, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
-		require.Len(t, parsed.Haves, test.haveCap, "oversized object selection did not remain bounded and bypass local execution: %+v %v", parsed, err)
+		require.NoError(t, err)
+		require.False(t, parsed.Supported, "command beyond the packet budget was classified as local: %+v", parsed)
+		require.Less(t, len(parsed.Wants)+len(parsed.Haves), test.count, "command beyond the packet budget was fully retained")
 	}
+	for _, test := range []struct {
+		field string
+		count int
+	}{
+		{"want " + strings.Repeat("a", 40), 4000},
+		{"have " + strings.Repeat("a", 40), 4000},
+	} {
+		lines := make([]string, test.count)
+		for i := range lines {
+			lines[i] = test.field
+		}
+		parsed, err := ParseFetch(request(append(lines, "done")...))
+		require.NoError(t, err, "large object selection did not stay local: %+v %v", parsed, err)
+		require.True(t, parsed.Supported, "large object selection did not stay local: %+v %v", parsed, err)
+		if strings.HasPrefix(test.field, "want ") {
+			require.Len(t, parsed.Wants, test.count, "large want selection was truncated: %+v", parsed)
+		} else {
+			require.Len(t, parsed.Haves, test.count, "large have selection was truncated: %+v", parsed)
+		}
+	}
+}
+
+func TestFilterRequestDropsSelectedPacketsOnly(t *testing.T) {
+	oid := func(n int) string { return fmt.Sprintf("%040x", n) }
+	data := request("thin-pack", "ofs-delta", "want "+oid(1), "have "+oid(2), "have "+oid(3), "include-tag", "done")
+	dropped := map[string]bool{oid(3): true}
+	filtered := FilterRequest(data, func(line string) bool {
+		value, ok := strings.CutPrefix(line, "have ")
+		return ok && dropped[value]
+	})
+	require.Equal(t, request("thin-pack", "ofs-delta", "want "+oid(1), "have "+oid(2), "include-tag", "done"), filtered)
+	// Nothing dropped returns the input itself, and a non-have line naming a
+	// dropped OID is left alone.
+	require.Equal(t, data, FilterRequest(data, AgentLine))
+	require.Equal(t, data, FilterRequest(data, func(string) bool { return false }))
+	withAgent := request("agent=git/2.50.0", "thin-pack", "want "+oid(1))
+	require.Equal(t, request("thin-pack", "want "+oid(1)), FilterRequest(withAgent, AgentLine))
 }
 
 func TestRefsStreamingDoesNotUseCommandPacketLimit(t *testing.T) {

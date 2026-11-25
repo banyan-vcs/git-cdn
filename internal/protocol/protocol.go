@@ -12,8 +12,6 @@ import (
 const (
 	MaxPacketSize     = 65520
 	MaxCommandPackets = 4096
-	maxLocalWants     = 64
-	maxLocalHaves     = 128
 )
 
 type Packet struct {
@@ -105,7 +103,10 @@ func ParseFetch(data []byte) (Fetch, error) {
 	args := false
 	for count := 0; len(data) > 0; count++ {
 		if count >= MaxCommandPackets {
-			return f, fmt.Errorf("too many command packets")
+			// Classification stops at the packet budget. What was read is
+			// not trusted for local execution; the upstream judges the rest.
+			f.Supported = false
+			return f, nil
 		}
 		p, rest, err := nextPacket(data)
 		if err != nil {
@@ -148,21 +149,13 @@ func ParseFetch(data []byte) (Fetch, error) {
 			if !OID(value) {
 				f.Supported = false
 			}
-			if len(f.Wants) < maxLocalWants {
-				f.Wants = append(f.Wants, value)
-			} else {
-				f.Supported = false
-			}
+			f.Wants = append(f.Wants, value)
 		case strings.HasPrefix(line, "have "):
 			value := strings.TrimPrefix(line, "have ")
 			if !OID(value) {
 				f.Supported = false
 			}
-			if len(f.Haves) < maxLocalHaves {
-				f.Haves = append(f.Haves, value)
-			} else {
-				f.Supported = false
-			}
+			f.Haves = append(f.Haves, value)
 		case line == "include-tag":
 			f.IncludeTag = true
 		case line == "done":
@@ -335,6 +328,42 @@ func (s Snapshot) Allows(wants []string) bool {
 		}
 	}
 	return true
+}
+
+// AgentLine reports a capability line naming the client's Git version. The
+// agent never changes a response, so request keys drop it.
+func AgentLine(line string) bool { return strings.HasPrefix(line, "agent=") }
+
+// FilterRequest returns data without the packets whose line satisfies drop.
+// Every other byte, including capability and control packets, is kept
+// verbatim, so the result is still a well-formed request. It returns data
+// itself when nothing is dropped. The input must already have passed
+// ParseFetch; trailing bytes it cannot frame are kept as they are.
+func FilterRequest(data []byte, drop func(line string) bool) []byte {
+	rest := data
+	kept := 0 // data[:kept] is already in filtered
+	var filtered []byte
+	for len(rest) > 0 {
+		p, next, err := nextPacket(rest)
+		if err != nil {
+			break
+		}
+		packet := rest[:len(rest)-len(next)]
+		rest = next
+		if p.Control != -1 || !drop(strings.TrimSuffix(string(p.Data), "\n")) {
+			continue
+		}
+		if filtered == nil {
+			filtered = make([]byte, 0, len(data))
+		}
+		end := len(data) - len(rest) - len(packet)
+		filtered = append(filtered, data[kept:end]...)
+		kept = len(data) - len(rest)
+	}
+	if filtered == nil {
+		return data
+	}
+	return append(filtered, data[kept:]...)
 }
 
 func LSRefsRequest() []byte {

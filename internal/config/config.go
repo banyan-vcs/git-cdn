@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,6 +69,7 @@ type Config struct {
 	RepackTimeout             string              `json:"repack_timeout" yaml:"repack_timeout"`
 	GCInterval                string              `json:"gc_interval" yaml:"gc_interval"`
 	GCRetention               string              `json:"gc_retention" yaml:"gc_retention"`
+	GCTimeout                 string              `json:"gc_timeout" yaml:"gc_timeout"`
 	MaxConcurrentGit          int                 `json:"max_concurrent_git" yaml:"max_concurrent_git"`
 	MaxConcurrentRequests     int                 `json:"max_concurrent_requests" yaml:"max_concurrent_requests"`
 	MaxRequestsPerSecond      int                 `json:"max_requests_per_second" yaml:"max_requests_per_second"`
@@ -83,9 +85,13 @@ type Config struct {
 	FetchTimeout              string              `json:"fetch_timeout" yaml:"fetch_timeout"`
 	GitTimeout                string              `json:"git_timeout" yaml:"git_timeout"`
 	UpstreamTimeout           string              `json:"upstream_timeout" yaml:"upstream_timeout"`
-	TLSCert                   string              `json:"tls_cert" yaml:"tls_cert"`
-	TLSKey                    string              `json:"tls_key" yaml:"tls_key"`
-	SSH                       *SSH                `json:"ssh,omitempty" yaml:"ssh,omitempty"`
+	// UpstreamProxy and UpstreamCAFile shape outbound origin connections only:
+	// proxy variables from the process environment are ignored on purpose.
+	UpstreamProxy  string `json:"upstream_proxy" yaml:"upstream_proxy"`
+	UpstreamCAFile string `json:"upstream_ca_file" yaml:"upstream_ca_file"`
+	TLSCert        string `json:"tls_cert" yaml:"tls_cert"`
+	TLSKey         string `json:"tls_key" yaml:"tls_key"`
+	SSH            *SSH   `json:"ssh,omitempty" yaml:"ssh,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -173,6 +179,9 @@ func (c *Config) Validate() error {
 	if err := c.validateTransport(); err != nil {
 		return err
 	}
+	if err := c.validateOutbound(); err != nil {
+		return err
+	}
 	if err := c.validateCredentialHosts(upstreams); err != nil {
 		return err
 	}
@@ -250,7 +259,7 @@ func (c *Config) validateLimits() error {
 	for _, timeout := range []struct {
 		p *string
 		d string
-	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "2m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}, {&c.RepackTimeout, "2m"}, {&c.GCInterval, "24h"}, {&c.GCRetention, "336h"}} {
+	}{{&c.FetchTimeout, "2m"}, {&c.GitTimeout, "5m"}, {&c.UpstreamTimeout, "30s"}, {&c.WriteIdleTimeout, "30s"}, {&c.RequestTimeout, "10m"}, {&c.RepackTimeout, "2m"}, {&c.GCTimeout, "30m"}, {&c.GCInterval, "24h"}, {&c.GCRetention, "336h"}} {
 		if *timeout.p == "" {
 			*timeout.p = timeout.d
 		}
@@ -297,6 +306,31 @@ func (c *Config) validateTransport() error {
 	}
 	if c.TLSCert == "" && !c.AllowInsecureHTTP && !IsLoopbackHost(host) && len(c.TrustedProxyCIDRs) == 0 {
 		return fmt.Errorf("non-loopback HTTP listener requires TLS, trusted_proxy_cidrs, or explicit allow_insecure_http")
+	}
+	return nil
+}
+
+// validateOutbound checks the explicit egress settings. Proxy schemes are the
+// ones every consumer understands: Go's transport and Git's curl for HTTP
+// origins, the tunnel dialer for SSH origins.
+func (c *Config) validateOutbound() error {
+	if c.UpstreamProxy != "" {
+		u, err := url.Parse(c.UpstreamProxy)
+		valid := err == nil && u != nil && u.Host != "" && u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/")
+		if valid {
+			valid = slices.Contains([]string{"http", "https", "socks5", "socks5h"}, strings.ToLower(u.Scheme))
+		}
+		if !valid {
+			return fmt.Errorf("upstream_proxy must be an http, https or socks5 proxy URL without a path, query or fragment")
+		}
+		c.UpstreamProxy = u.String()
+	}
+	if c.UpstreamCAFile != "" {
+		path, err := ExpandHome(c.UpstreamCAFile)
+		if err != nil {
+			return fmt.Errorf("upstream_ca_file: %w", err)
+		}
+		c.UpstreamCAFile = path
 	}
 	return nil
 }
