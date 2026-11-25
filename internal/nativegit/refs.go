@@ -10,8 +10,12 @@ import (
 	"strings"
 )
 
+// InitBare creates an empty reftable repository. The template is emptied:
+// every hydration staging directory and every per-request view would
+// otherwise receive the sample hooks and description files, which are
+// created and deleted thousands of times without ever being read.
 func (r *Runner) InitBare(ctx context.Context, dir string) error {
-	return r.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--object-format=sha1", "--ref-format=reftable", dir)
+	return r.Run(ctx, "", nil, io.Discard, nil, "init", "--quiet", "--bare", "--template=", "--object-format=sha1", "--ref-format=reftable", dir)
 }
 
 func (r *Runner) RequireReftable(ctx context.Context) error {
