@@ -305,7 +305,8 @@ git clone http://127.0.0.1:8080/github/git/git.git
         <h3>已有检出</h3>
 <pre><code><span class="c"># 全局改写 origin URL——原生 git，无需插件：</span>
 git config --global \
-  url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
+  url."https://git-cdn.example/".insteadOf \
+  "https://gitlab.com/"
 
 <span class="c"># 凭据提供给 CDN 域名，每次 fetch 由 CDN 转发给原站；
 # 改写同样作用于 push，CDN 会把 push 透传给上游</span></code></pre>

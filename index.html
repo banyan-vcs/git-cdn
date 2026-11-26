@@ -339,7 +339,8 @@ git clone http://127.0.0.1:8080/github/git/git.git
         <h3>Existing checkouts</h3>
 <pre><code><span class="c"># rewrite origin URLs, fleet-wide — plain git, no plugins:</span>
 git config --global \
-  url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
+  url."https://git-cdn.example/".insteadOf \
+  "https://gitlab.com/"
 
 <span class="c"># credentials are provided for the CDN domain and forwarded
 # to the origin on every fetch; the rewrite also covers

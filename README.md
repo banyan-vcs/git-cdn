@@ -3,10 +3,12 @@
 The project website for [git-cdn](https://github.com/banyan-vcs/git-cdn) —
 an HTTP Git caching proxy. English at the root, Chinese under `zh-cn/`.
 
-**There is no build step, no generator, and no dependency.** Pages are plain
-HTML sharing one stylesheet (`assets/style.css`). What you edit is what is
-served — same taste as the banyan site, a different palette (cache steel-blue
-instead of banyan green).
+**Deployment has no build step, no generator and no dependency.** Pages are
+plain HTML sharing one stylesheet, and what is committed is what is served.
+The look is the monochrome shared with the banyan site — black, gray and
+white by day, an automatic dark mode in which the primary controls turn
+brand yellow — with a three-state theme toggle (auto, light, dark) on every
+page.
 
 ## Publish
 
@@ -37,7 +39,9 @@ index.html            EN home (why / how a fetch is served / features / quick st
 docs.html             EN documentation index — deep links into the main repo's docs/
 404.html              bilingual not-found page
 zh-cn/                Chinese mirror of the pages above
-assets/style.css      the whole design system (~330 lines, auto dark mode)
+assets/style.less     the stylesheet's source — edit this
+assets/style.css      compiled from style.less; the only stylesheet the pages load
+assets/theme.js       the three-state theme toggle (auto / light / dark)
 assets/avatar.svg     the project mark — favicon and brand glyph
 assets/lang.js        language negotiation (relative paths, subpath-safe)
 assets/architecture.svg      EN architecture diagram
@@ -65,6 +69,12 @@ robots.txt, sitemap.xml, .nojekyll
   `docs/assets/` — the same topology in this site's colors. When the
   repository's diagrams change, carry the change into both copies and keep
   the `alt` texts in the two `index.html` files in sync with them.
+- **Styles**: edit `assets/style.less`, never the `.css`, and commit the
+  recompiled `assets/style.css` in the same change
+  (`lessc assets/style.less assets/style.css`, Less 4.x — the committed css
+  is exactly what the compiler prints). Check the result on a phone-sized
+  viewport as well as on a desktop: the hero diagram and the card grids are
+  meant to shrink with the viewport, never to widen the page.
 - **Voice**: first-party assertions only, no slogan tails. The site renders
   identically offline — no web fonts, no CDN scripts, no analytics. Keep it
   that way.
