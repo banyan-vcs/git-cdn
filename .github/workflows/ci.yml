@@ -128,6 +128,13 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Lint Grafana dashboard
+        if: matrix.go == 'module' && matrix.os == 'ubuntu-24.04'
+        uses: grafana/dashboard-linter@c7d457aca03b773a9353be7e9d53d920b10f646c # v0.5.2
+        with:
+          files: dashboards
+          args: --config dashboards/.lint --strict
+
       - name: Build
         run: go build ./...
 

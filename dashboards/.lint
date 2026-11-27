@@ -1,0 +1,8 @@
+# dashboard-linter exceptions for this directory. Run from the repository root:
+#   dashboard-linter lint --config dashboards/.lint dashboards/git-cdn.json
+exclusions:
+  uneditable-dashboard:
+    reason: >-
+      The file is the source of truth, but the dashboard reaches users by hand,
+      and an imported copy is theirs to adjust in Grafana before exporting the
+      JSON back. A read-only dashboard cannot be edited there.

@@ -103,6 +103,8 @@ https://git-cdn-github.example/github/owner/repo.git   → https://github.com/ow
 | [docs/protocol-probes.md](docs/protocol-probes.md) | 设计依据的本地 Git 验证 |
 | [docs/testing.md](docs/testing.md) | CI 矩阵、真实仓库验证、测量规则 |
 
+`/metrics` 的 Grafana 看板维护在 [dashboards/git-cdn.json](dashboards/git-cdn.json)，导入方式见 [docs/configuration.md](docs/configuration.md#health-and-metrics) 的 Health and metrics 一节。
+
 ## 验证
 
 ```sh

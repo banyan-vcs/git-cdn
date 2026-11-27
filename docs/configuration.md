@@ -251,3 +251,12 @@ hydration, passthrough and authorization-denial counters, plus cache bytes,
 limit, pending reservation bytes, entry count, evictions and evicted bytes.
 Metrics also report active requests, admission rejections and temporary
 response bytes. Logs omit authentication headers and upstream Git stderr.
+
+A Grafana dashboard for these metrics lives at
+[dashboards/git-cdn.json](../dashboards/git-cdn.json). Import it under
+Dashboards → New → Import and pick the Prometheus that scrapes the proxy;
+every query filters by the `job` and `instance` variables. The Repositories
+row and the panels carrying an information note stay empty until the process
+exports the aggregate metrics they query — the dashboard description lists
+which. To change the dashboard, edit it in Grafana, export the JSON and
+replace the file; CI lints it with `dashboard-linter`.
