@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-cdn cluster</title>
+<style>
+  :root {
+    --paper: #faf7f2; --ink: #1c1917; --ink-soft: #57534e;
+    --line: #e7e0d5; --card: #fffdf9; --gold: #a16207;
+    --ok: #3f6212; --bad: #9f1239;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.65 system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 .35rem; letter-spacing: -.01em; }
+  h1 .dot { color: var(--gold); }
+  h2 { font-size: 1.15rem; margin: 3rem 0 .8rem; }
+  .sub { color: var(--ink-soft); margin: 0 0 1rem; }
+  .pill {
+    display: inline-block; font: 600 .78rem/1 var(--mono); padding: .38rem .6rem;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+    vertical-align: middle;
+  }
+  .pill.up { color: var(--ok); }
+  .pill.down { color: var(--bad); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: .8rem; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .8rem .95rem; }
+  .stat b { display: block; font: 600 1.25rem/1.2 var(--mono); margin-top: .15rem; }
+  .stat span { font-size: .8rem; color: var(--ink-soft); }
+  .stat small { display: block; font-size: .72rem; color: var(--ink-soft); margin-top: .1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-soft); font-weight: 500; font-size: .78rem; }
+  td.mono, .mono { font-family: var(--mono); font-size: .85em; }
+  .term {
+    background: var(--ink); color: #f5f0e8; border-radius: 10px; padding: .9rem 1.1rem;
+    font: .84rem/1.7 var(--mono); overflow-x: auto; white-space: pre;
+  }
+  .term .c { color: #a8a29e; }
+  .note { color: var(--ink-soft); font-size: .85rem; margin: .5rem 0 0; }
+  .warn {
+    border: 1px solid var(--line); border-left: 3px solid var(--gold);
+    background: var(--card); border-radius: 8px; padding: .8rem 1rem; font-size: .88rem;
+  }
+  a { color: var(--gold); }
+  .arch { font: .82rem/1.6 var(--mono); color: var(--ink-soft); background: var(--card);
+          border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem;
+          white-space: pre; overflow-x: auto; }
+  footer { margin-top: 4rem; color: var(--ink-soft); font-size: .8rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>git-cdn <span class="dot">cluster</span> <span class="pill" id="status">…</span></h1>
+  <p class="sub">一个负载均衡把同一个域名上的 HTTP 和 SSH 分发给可扩缩的 git-cdn 实例，每个实例持独立缓存卷、共用同一把烘焙进镜像的 SSH 宿主键。</p>
+
+  <div class="arch">load balancer ─┬─ HTTP → node ×N（8080，各自缓存卷）
+（traefik）        └─ SSH  → node ×N（2222，宿主键烘焙进镜像）
+origin（演示源站：SSH 密码 + git-shell，HTTP lighttpd + git http-backend）</div>
+
+  <h2>监控</h2>
+  <div id="monitor">
+    <div class="warn">正在连接 Prometheus（<span class="mono" id="prom-url"></span>）…</div>
+  </div>
+
+  <h2>使用方式</h2>
+  <p class="sub">命令里的地址就是你现在访问本页的地址。HTTP 默认代理 github 单站点，路径直通；SSH 走演示源站（密码 <span class="mono">demo</span>）——github 的 SSH 只收公钥不收密码。</p>
+  <div class="term" id="cmds"></div>
+  <p class="note">SSH 端口按 <span class="mono">SSH_PORT</span>（默认 2222；标准端口部署时去掉 <span class="mono">-p</span> 段）。
+  客户端信任文件用 <span class="mono">examples/cluster/client_known_hosts</span>（<span class="mono">gen-keys.sh</span> 生成）。</p>
+
+  <h2>换个姿势</h2>
+  <div class="term"><span class="c"># 离线上游（网络到不了 github 时）</span>
+GIT_CDN_NODE_CONFIG=./node.offline.yaml docker compose up -d --wait
+
+<span class="c"># 扩到 4 个实例</span>
+docker compose --profile metrics up -d --wait --scale node=4
+
+<span class="c"># 客户端无感改写（对已有检出生效）</span>
+git config --global url."http://<span id="host1"></span>/".insteadOf "https://github.com/"</div>
+
+  <footer>介绍与键生命周期：<a href="https://github.com/banyan-vcs/git-cdn/tree/main/examples/cluster">examples/cluster</a>
+   · 看板 JSON：<a href="https://github.com/banyan-vcs/git-cdn/blob/main/dashboards/git-cdn.json">dashboards/git-cdn.json</a>
+   · 指标明细：<a id="prom-link">Prometheus UI</a></footer>
+</div>
+
+<script>
+'use strict';
+const PROM = location.protocol + '//' + location.hostname + ':19090';
+document.getElementById('prom-url').textContent = PROM;
+document.getElementById('prom-link').href = PROM + '/';
+
+const host = location.host;
+document.getElementById('host1').textContent = host;
+document.getElementById('cmds').innerHTML =
+  '<span class="c"># HTTP——默认 github 上游，路径直通（单站点无站点前缀）</span>\n' +
+  'git clone http://' + host + '/octocat/Hello-World.git\n\n' +
+  '<span class="c"># 离线上游时</span>\n' +
+  'git clone http://' + host + '/demo/repo.git\n\n' +
+  '<span class="c"># SSH——密码 demo</span>\n' +
+  "GIT_SSH_COMMAND='ssh -o UserKnownHostsFile=client_known_hosts -p 2222' \\\n" +
+  '  git clone ssh://git@' + host + ':2222/demo/repo.git';
+
+function bytes(n) {
+  if (n == null) return '—';
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+}
+function num(n) { return n == null ? '—' : Number(n).toLocaleString('zh-CN'); }
+
+async function q(expr) {
+  const r = await fetch(PROM + '/api/v1/query?query=' + encodeURIComponent(expr));
+  if (!r.ok) throw new Error(r.status);
+  const j = await r.json();
+  if (j.status !== 'success') throw new Error('query failed');
+  return j.data.result;
+}
+const val = (r, idx) => r.length ? +r[0].value[idx ?? 1] : null;
+
+async function renderMonitor() {
+  const el = document.getElementById('monitor');
+  try {
+    const [up, repos, cache, max, disk, local, hits, passthru, active,
+          entries, starts] = await Promise.all([
+      q('up'), q('sum(gitcdn_repositories)'),
+      q('sum(gitcdn_cache_bytes)'), q('max(gitcdn_cache_max_bytes)'),
+      q('min(gitcdn_disk_free_bytes)'),
+      q('sum(gitcdn_local_requests_total)'), q('sum(gitcdn_pack_cache_hits_total)'),
+      q('sum(gitcdn_passthrough_requests_total)'),
+      q('sum(gitcdn_active_repositories{window="24h"})'),
+      q('gitcdn_cache_entries'), q('gitcdn_process_start_time_seconds'),
+    ]);
+    const nUp = up.filter(r => +r.value[1] === 1).length;
+    const st = document.getElementById('status');
+    st.textContent = nUp + '/' + up.length + ' 实例在线';
+    st.className = 'pill ' + (nUp === up.length && nUp > 0 ? 'up' : 'down');
+
+    const rows = up.map(r => {
+      const inst = r.metric.instance;
+      const e = entries.find(x => x.metric.instance === inst);
+      const s = starts.find(x => x.metric.instance === inst);
+      const mins = s ? Math.floor(Date.now() / 1000 - +s.value[1]) / 60 : null;
+      return '<tr><td class="mono">' + inst + '</td><td>' +
+        (mins == null ? '—' : (mins < 90 ? Math.round(mins) + ' 分钟' : (mins / 1440).toFixed(1) + ' 天')) +
+        '</td><td class="mono">' + (e ? num(+e.value[1]) : '—') + '</td></tr>';
+    }).join('');
+
+    el.innerHTML =
+      '<div class="grid">' +
+      '<div class="stat"><span>缓存的仓库</span><b>' + num(val(repos)) + '</b></div>' +
+      '<div class="stat"><span>缓存用量</span><b>' + bytes(val(cache)) + '</b><small>上限 ' + bytes(val(max)) + '</small></div>' +
+      '<div class="stat"><span>磁盘剩余</span><b>' + bytes(val(disk)) + '</b><small>最紧的一台</small></div>' +
+      '<div class="stat"><span>本地服务请求</span><b>' + num(val(local)) + '</b></div>' +
+      '<div class="stat"><span>响应复用命中</span><b>' + num(val(hits)) + '</b></div>' +
+      '<div class="stat"><span>回源透传</span><b>' + num(val(passthru)) + '</b></div>' +
+      '<div class="stat"><span>24h 活跃仓库</span><b>' + num(val(active)) + '</b></div>' +
+      '</div>' +
+      '<h2>实例</h2>' +
+      '<table><tr><th>instance</th><th>运行时长</th><th>缓存条目</th></tr>' + rows + '</table>' +
+      '<p class="note">数字取自即时查询，抓取间隔 5 秒；完整时序看 Prometheus UI，或把 ' +
+      '<span class="mono">dashboards/git-cdn.json</span> 导入任何 Grafana、数据源指到 ' +
+      '<span class="mono">' + PROM + '</span>。</p>';
+  } catch (e) {
+    document.getElementById('status').className = 'pill down';
+    el.innerHTML = '<div class="warn">指标不可达——本页监控区直连 ' + PROM +
+      '。集群没带 metrics profile 时没有采集端：用 ' +
+      '<span class="mono">docker compose --profile metrics up -d --wait</span> 起一份，刷新本页即可。' +
+      '（介绍与使用方式不受影响。）</div>';
+  }
+}
+renderMonitor();
+setInterval(renderMonitor, 5000);
+</script>
+</body>
+</html>

@@ -62,7 +62,7 @@ The client owns the password/token file. The proxy receives its value over SSH a
 
 ## Cluster example
 
-[examples/cluster](../examples/cluster) scales the same image out behind one load balancer: HTTP and SSH leave the same DNS name, each instance keeps its own cache volume, and the SSH host key is baked into the image so every instance presents one identity. A demo origin with password SSH and anonymous HTTP makes both paths verifiable offline, and an optional metrics profile brings Prometheus scraping every instance. See the example's README for the topology, the offline variant and the key lifecycle.
+[examples/cluster](../examples/cluster) scales the same image out behind one load balancer: HTTP and SSH leave the same DNS name, each instance keeps its own cache volume, and the SSH host key is baked into the image so every instance presents one identity. A demo origin with password SSH and anonymous HTTP makes both paths verifiable offline, an optional metrics profile brings Prometheus scraping every instance, and a landing page at `/` shows the clone commands for the address it is visited under plus live stats read from Prometheus. See the example's README for the topology, the offline variant and the key lifecycle.
 
 ## State and operations
 

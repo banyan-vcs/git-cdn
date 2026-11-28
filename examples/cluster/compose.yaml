@@ -15,6 +15,28 @@
 name: git-cdn-cluster
 
 services:
+  # Landing page at /: what this cluster is, the clone commands for the
+  # address it is visited under, and live stats read straight from the
+  # Prometheus API (when the metrics profile is on). Exact paths only —
+  # git routing is untouched.
+  homepage:
+    image: nginx:1.29-alpine
+    volumes:
+      - type: bind
+        source: ./homepage
+        target: /usr/share/nginx/html
+        read_only: true
+        bind:
+          create_host_path: false
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: git-cdn-cluster_default
+      traefik.http.routers.homepage.entrypoints: web
+      traefik.http.routers.homepage.rule: Path(`/`) || Path(`/index.html`)
+      traefik.http.routers.homepage.priority: "100"
+      traefik.http.services.homepage.loadbalancer.server.port: "80"
+    restart: unless-stopped
+
   lb:
     image: traefik:v3.7
     command:
