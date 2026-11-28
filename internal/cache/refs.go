@@ -213,6 +213,9 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) (err e
 			return err
 		}
 	}
+	if err := clearStaleRefLocks(l.Dir); err != nil {
+		return err
+	}
 	if updates.Len() > 0 {
 		if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 			return err

@@ -16,6 +16,8 @@ New object caches, hydration staging and client ref views use `git init --bare -
 
 HEAD is read and written through native Git, since the on-disk `HEAD` in a reftable repository is a compatibility marker. Ref update admission reserves room for new records, table-stack compaction and backend metadata; existing files repositories retain their packed-refs rewrite allowance. Repack and GC copy the repository's current backend into private staging and preserve its format.
 
+Git holds a reference lock for the length of one transaction and removes it when the transaction ends; a Git process killed in the middle of one — a reconciliation that a queued request preempted, a hydration whose client left, a service that was stopped — leaves the lock behind, and every later transaction in the repository would fail with `cannot lock`. Reference transactions only run where the previous writers are known to have exited: under the writer side of the repository gate, the store's directory lock during migration, or in a maintenance staging copy. The next transaction discards a lock found there, so the repository keeps hydrating and reconciling instead of waiting for the file to be removed by hand.
+
 Existing files-format caches stay usable without downloading their objects again. To convert one, stop all users of its cache directory, then use Git 2.46+:
 
 ```sh

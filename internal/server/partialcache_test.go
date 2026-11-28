@@ -100,6 +100,36 @@ func TestShallowFleetRetiresOldRootsAfterDrift(t *testing.T) {
 	require.GreaterOrEqual(t, metricValue(t, h, "gitcdn_roots_retired_total"), 1, "retirement was not counted")
 }
 
+// A reconciliation preempted while Git held the reference lock can leave the
+// lock behind; from then on every reference transaction in the scope fails.
+// The drifted tip must still be hydrated locally — a failure there sends the
+// fetch to the upstream instead — and the old root must still retire.
+func TestShallowFleetRetiresOldRootsAfterAKilledRefWriter(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
+	repos, err := filepath.Glob(filepath.Join(s.store.Root, "repos", "*", "repo.git"))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, len(repos))
+	// Wait for the first reconciliation: a lock planted under its running
+	// transaction would fail that one, and its backoff is not what this
+	// test is about.
+	require.Eventually(t, func() bool {
+		return metricValue(t, h, "gitcdn_reconciles_total") >= 1
+	}, 15*time.Second, 50*time.Millisecond, "shallow traffic never reconciled")
+	oldTip := f.tip
+	f.commit(t, "drift")
+	testGit(t, f.work, "push", "--quiet", f.repo, "main", ":refs/tags/v1")
+	require.NoError(t, os.WriteFile(filepath.Join(repos[0], "reftable", "tables.list.lock"), nil, 0600))
+	drifted := postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", fetchBody(f.tip, "deepen 1"), testAuthorization, nil)
+	responseBody(t, drifted)
+	require.EqualValues(t, "MISS", drifted.Header.Get("X-GitCDN-Cache-Status"), "the drifted tip was not hydrated locally")
+	require.Eventually(t, func() bool {
+		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
+		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
+	}, 15*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
+}
+
 // A batch of concurrent shallow fetches on a warm scope collapses into one
 // generation through the shared-lease single flight; every client receives
 // the same response bytes.

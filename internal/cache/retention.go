@@ -122,6 +122,11 @@ func (l *Lease) expireRetained(ctx context.Context, dir string, now time.Time) (
 		}
 	}
 	if updates.Len() > 0 {
+		// dir is either the scope under the exclusive gate or this
+		// maintenance's private staging copy of it, lock included.
+		if err := clearStaleRefLocks(dir); err != nil {
+			return nil, err
+		}
 		if err := l.store.Git.Run(ctx, dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 			return nil, err
 		}

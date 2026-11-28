@@ -143,6 +143,10 @@ func (s *Store) mergeLegacy(ctx context.Context, parent string, scopes []string)
 		}
 	}
 	if transaction.Len() > 0 {
+		// The previous attempt may have been stopped inside its transaction.
+		if err := clearStaleRefLocks(repo); err != nil {
+			return err
+		}
 		if err := s.Git.Run(ctx, repo, strings.NewReader(transaction.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 			return err
 		}

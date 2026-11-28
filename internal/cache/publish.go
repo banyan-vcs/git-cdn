@@ -130,6 +130,9 @@ func (l *Lease) publish(ctx context.Context, stage string, roots []string, exist
 			return err
 		}
 	}
+	if err := clearStaleRefLocks(l.Dir); err != nil {
+		return err
+	}
 	if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 		return err
 	}

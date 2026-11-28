@@ -464,6 +464,9 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 			for _, oid := range expired {
 				fmt.Fprintf(&updates, "delete refs/cache/retained/%s %s\n", oid, oid)
 			}
+			if err := clearStaleRefLocks(l.Dir); err != nil {
+				return false, err
+			}
 			if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
 				return false, err
 			}
