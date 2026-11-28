@@ -137,11 +137,12 @@ func TestReconcileDefersWhileScopeIsBusy(t *testing.T) {
 	require.Eventually(t, func() bool { return setup.store.Stats().Reconciles >= 1 }, 10*time.Second, 50*time.Millisecond, "deferred reconciliation never ran once idle")
 }
 
-// A request preempts reconciliation so it can hydrate the new tip. The
-// cancellation must not put that request's newer snapshot into failure
-// backoff, or the old snapshot's retry becomes the last applied ref view.
-func TestReconcilePreemptionDoesNotBackoffSnapshotDrift(t *testing.T) {
-	setup := reconcileFixture(t)
+// preemptedReconcile starts a reconciliation of the first tip, holds it
+// inside its lease and lets an exclusive request preempt it. It returns the
+// request's lease after that request hydrated the second tip, with the
+// reconciliation waiting to retry.
+func preemptedReconcile(t *testing.T, setup reconcileSetup, ctx context.Context) *Lease {
+	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var holdOnce, releaseOnce sync.Once
 	reconcileHold = func() {
@@ -161,9 +162,6 @@ func TestReconcilePreemptionDoesNotBackoffSnapshotDrift(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("reconciliation never acquired its lease")
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	acquired := make(chan *Lease, 1)
 	acquireErr := make(chan error, 1)
 	go func() {
@@ -185,24 +183,110 @@ func TestReconcilePreemptionDoesNotBackoffSnapshotDrift(t *testing.T) {
 	case lease = <-acquired:
 	case err := <-acquireErr:
 		require.NoError(t, err)
-		return
 	case <-ctx.Done():
 		t.Fatal("request never acquired its lease after preemption")
+	}
+	if lease == nil {
+		return nil
+	}
+	_, err := lease.Ensure(ctx, setup.origin, nil, []string{setup.second})
+	require.NoError(t, err)
+	return lease
+}
+
+// A request preempts reconciliation so it can hydrate the new tip. The
+// cancellation must not put that request's newer snapshot into failure
+// backoff, or the old snapshot's retry becomes the last applied ref view.
+func TestReconcilePreemptionDoesNotBackoffSnapshotDrift(t *testing.T) {
+	setup := reconcileFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease := preemptedReconcile(t, setup, ctx)
+	if lease == nil {
+		return
 	}
 	defer func() {
 		if lease != nil {
 			lease.Release()
 		}
 	}()
-	_, err := lease.Ensure(ctx, setup.origin, nil, []string{setup.second})
-	require.NoError(t, err)
+	// A served request arms the trigger with its own snapshot while it
+	// still holds the scope.
+	setup.store.Reconcile(setup.key, setup.snapshotFor(setup.second))
 	lease.Release()
 	lease = nil
-	setup.store.Reconcile(setup.key, setup.snapshotFor(setup.second))
 	require.Eventually(t, func() bool {
 		refs := setup.cacheRefs(t)
 		return strings.Contains(strings.Join(refs, " "), "refs/cache/roots/"+setup.second) &&
 			!strings.Contains(strings.Join(refs, " "), "refs/cache/roots/"+setup.first)
 	}, 10*time.Second, 50*time.Millisecond, "preempted reconciliation lost the new snapshot")
 	require.Contains(t, setup.cacheRefs(t), retainedPrefix+setup.first)
+	// The preempted run applied the newer snapshot itself. Reapplying the
+	// one it was started for would have moved the new root into retention
+	// first and counted a second reconciliation. The refs become visible
+	// before the count is taken, and a run of its own would follow later.
+	require.Eventually(t, func() bool { return setup.store.Stats().Reconciles >= 1 }, 10*time.Second, 20*time.Millisecond, "reconciliation was not counted")
+	time.Sleep(300 * time.Millisecond)
+	stats := setup.store.Stats()
+	require.EqualValues(t, 1, stats.Reconciles, "the superseded snapshot was reconciled too")
+	require.EqualValues(t, 1, stats.RootsRetired, "the new root was retired before the old one")
+	require.NotContains(t, setup.cacheRefs(t), retainedPrefix+setup.second)
+}
+
+// Triggers that arrive while a run waits only replace the snapshot it will
+// apply. A fleet of warm hits can then arm the reconciliation with every
+// request without a run, and a reconciliation, per request.
+func TestReconcileKeepsOneWaitingRunPerScope(t *testing.T) {
+	setup := reconcileFixture(t)
+	shared, err := setup.store.AcquireShared(context.Background(), setup.key)
+	require.NoError(t, err)
+	for range 50 {
+		setup.store.Reconcile(setup.key, setup.snapshotFor(setup.first))
+	}
+	shared.Release()
+	require.Eventually(t, func() bool { return setup.store.Stats().Reconciles >= 1 }, 10*time.Second, 50*time.Millisecond, "deferred reconciliation never ran")
+	time.Sleep(300 * time.Millisecond)
+	require.EqualValues(t, 1, setup.store.Stats().Reconciles, "triggers that arrived while a run waited started runs of their own")
+	require.Contains(t, setup.cacheRefs(t), "refs/cache/upstream/heads/main", "the deferred run did not apply the snapshot")
+}
+
+// A trigger that arrives after the run took its lease replaces the snapshot
+// that run applies: it is the newer state of the same scope.
+func TestReconcileRunAppliesASnapshotArmedAfterItTookTheLease(t *testing.T) {
+	setup := reconcileFixture(t)
+	naming := func(ref string) protocol.Snapshot {
+		data := append(protocol.Encode(setup.first+" "+ref+"\n"), []byte("0000")...)
+		snapshot, err := protocol.ParseRefs(data)
+		require.NoError(t, err)
+		snapshot.ObservedAt = time.Now()
+		return snapshot
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var holdOnce, releaseOnce sync.Once
+	reconcileHold = func() {
+		holdOnce.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		require.NoError(t, setup.store.Close())
+		reconcileHold = nil
+	})
+	setup.store.Reconcile(setup.key, naming("refs/heads/main"))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciliation never acquired its lease")
+	}
+	setup.store.Reconcile(setup.key, naming("refs/heads/develop"))
+	releaseOnce.Do(func() { close(release) })
+	require.Eventually(t, func() bool {
+		refs := strings.Join(setup.cacheRefs(t), " ")
+		return strings.Contains(refs, "refs/cache/upstream/heads/develop") && !strings.Contains(refs, "refs/cache/upstream/heads/main")
+	}, 10*time.Second, 50*time.Millisecond, "the run applied the snapshot it was started for instead of the newer one")
+	require.Eventually(t, func() bool { return setup.store.Stats().Reconciles >= 1 }, 10*time.Second, 20*time.Millisecond, "reconciliation was not counted")
+	time.Sleep(300 * time.Millisecond)
+	require.EqualValues(t, 1, setup.store.Stats().Reconciles, "the newer snapshot started a run of its own")
 }

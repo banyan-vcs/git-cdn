@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/logging"
+	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
 )
 
 var (
@@ -66,6 +67,19 @@ type entry struct {
 	reconcileFP  [32]byte
 	hydrateSince int
 	reconcile    Backoff
+	// reconcileWant is the newest snapshot a served request asked to apply,
+	// and reconcileWaiting is set while a background run exists that will
+	// apply it: a trigger arriving meanwhile only replaces the snapshot.
+	reconcileWant    protocol.Snapshot
+	reconcileWaiting bool
+	// site is the upstream alias the scope was last served for, recorded
+	// in .site so that a restart keeps the per-site split.
+	site string
+	// activity is a ring of hourly request counts for the last day,
+	// allocated by the first request served; activityHour is the hour its
+	// last slot stands for.
+	activity     []uint32
+	activityHour int64
 	// gc and repack back off after a failed or capacity-skipped maintenance
 	// run.
 	gc     Backoff
@@ -403,7 +417,7 @@ func (s *Store) loadEntries() error {
 		if err != nil {
 			return err
 		}
-		e := &entry{key: key, changed: make(chan struct{}), accessed: info.ModTime(), accessFlushed: info.ModTime(), lastGC: lastGC, packs: scanPackIndex(filepath.Join(path, "packcache"))}
+		e := &entry{key: key, changed: make(chan struct{}), accessed: info.ModTime(), accessFlushed: info.ModTime(), lastGC: lastGC, packs: scanPackIndex(filepath.Join(path, "packcache")), site: s.loadSite(path)}
 		s.applyMeasureLocked(e, measured)
 		s.entries[key] = e
 	}

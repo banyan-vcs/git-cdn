@@ -37,22 +37,25 @@ type Store struct {
 	cleaning bool
 	// hydrationBackoffs remembers, per scope key, hydrations that failed.
 	hydrationBackoffs map[string]*Backoff
-	repack            RepackOptions
-	repackQueue       chan string
-	maintenance       context.Context
-	cancel            context.CancelFunc
-	workers           sync.WaitGroup
-	closeOnce         sync.Once
-	closeErr          error
-	closed            bool
-	repacks           uint64
-	repackFailed      uint64
-	repackSkipped     uint64
-	gcs               uint64
-	gcFailed          uint64
-	gcSkipped         uint64
-	reconciles        uint64
-	rootsRetired      uint64
+	// siteRequests counts the fetches served per site since the process
+	// started; the scopes themselves are counted through their entries.
+	siteRequests  map[string]int64
+	repack        RepackOptions
+	repackQueue   chan string
+	maintenance   context.Context
+	cancel        context.CancelFunc
+	workers       sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
+	closed        bool
+	repacks       uint64
+	repackFailed  uint64
+	repackSkipped uint64
+	gcs           uint64
+	gcFailed      uint64
+	gcSkipped     uint64
+	reconciles    uint64
+	rootsRetired  uint64
 }
 
 func Open(root string, git *nativegit.Runner, maxBytes int64, options ...RepackOptions) (*Store, error) {
@@ -276,6 +279,11 @@ func (s *Store) unpinWaiter(e *entry, shared bool) {
 // it takes its lease, so tests can observe Close joining it deterministically.
 var reconcileHold func()
 
+// ReconcileIdleWait bounds how long a scheduled reconciliation waits for its
+// scope to go idle before it gives up and leaves the trigger due. Tests
+// shorten it.
+var ReconcileIdleWait = 2 * time.Second
+
 // Reconcile refreshes the scope's storage refs to snapshot on a background
 // exclusive lease. It never blocks or fails the caller; reconciliation
 // catches up on the next trigger when the lease or the store is gone. The
@@ -286,6 +294,14 @@ var reconcileHold func()
 // lease is taken only while the scope is completely idle, so reconciliation
 // never queues behind (and blocks) fresh readers; a queued request can also
 // preempt it through the maintenance cancellation hook.
+//
+// One run waits per scope at most, and it applies the newest snapshot asked
+// for by the time it holds the lease. A trigger arriving while it waits
+// only replaces that snapshot, so every locally served request can arm the
+// reconciliation — response-pack hits included — without stacking a run per
+// request. A request arms it before it releases the scope, so a run a
+// request preempted finds that request's snapshot and never reapplies the
+// older one it was started for.
 func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 	if s.Git == nil || s.maintenance == nil {
 		return
@@ -305,22 +321,40 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 		s.mu.Unlock()
 		return
 	}
+	e.reconcileWant = snapshot
+	if e.reconcileWaiting {
+		s.mu.Unlock()
+		return
+	}
+	e.reconcileWaiting = true
 	s.workers.Add(1)
 	s.mu.Unlock()
-	go func() {
-		defer s.workers.Done()
-		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
-			lease := s.acquireIdle(key, e, cancel)
-			if lease == nil {
-				cancel()
-				return
-			}
+	go s.reconcile(key, e)
+}
+
+// reconcile is the background run Reconcile starts. It keeps applying the
+// scope's newest wanted snapshot until one of them is the last asked for,
+// the scope stays busy, or three attempts were preempted: a scope under
+// constant traffic keeps its trigger due, and the next request served arms
+// it again.
+func (s *Store) reconcile(key string, e *entry) {
+	defer s.workers.Done()
+	for attempt := 1; ; attempt++ {
+		busy := false
+		ctx, cancel := context.WithTimeout(s.maintenance, time.Minute)
+		lease := s.acquireIdle(key, e, cancel)
+		if lease == nil {
+			busy = true
+			cancel()
+		} else {
 			if hold := reconcileHold; hold != nil {
 				hold()
 			}
+			s.mu.Lock()
+			snapshot := e.reconcileWant
+			s.mu.Unlock()
 			ctx = logging.WithLogger(ctx, s.Git.Logger().With("operation", "reconcile"))
-			logging.Logger(ctx, s.Git.Logger()).DebugContext(ctx, "cache reconciliation started", "cache_key", key, "attempt", attempt+1)
+			logging.Logger(ctx, s.Git.Logger()).DebugContext(ctx, "cache reconciliation started", "cache_key", key, "attempt", attempt)
 			err := lease.SyncRefs(ctx, snapshot)
 			preempted := ctx.Err() == context.Canceled
 			cancel()
@@ -333,16 +367,23 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 			}
 			s.mu.Unlock()
 			lease.Release()
-			if err == nil || !preempted || attempt == 2 {
-				return
-			}
-			// Preempted by a queued request: that request re-arms the
-			// trigger when its own generation path runs Reconcile again,
-			// but an aftermath of pure pack hits would not, so retry a
-			// bounded number of times before staying due.
-			time.Sleep(100 * time.Millisecond)
 		}
-	}()
+		s.mu.Lock()
+		// A request that asked for another snapshot while this run waited or
+		// ran found the scope's run already here and started none, so the
+		// newest snapshot is this run's to apply.
+		done := busy || attempt >= 3 || e.reconcileFP == e.reconcileWant.Fingerprint() || !e.reconcile.Due(time.Now()) || s.closed || s.entries[key] != e
+		if done {
+			e.reconcileWaiting = false
+		}
+		s.mu.Unlock()
+		if done {
+			return
+		}
+		// Preempted by a queued request: give it time to finish before
+		// waiting for the scope to go idle again.
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // acquireIdle takes the exclusive gate for background reconciliation only
@@ -352,7 +393,7 @@ func (s *Store) Reconcile(key string, snapshot protocol.Snapshot) {
 // next request retries. The brief retry loop absorbs the microseconds in
 // which the spawning request path has not yet released its own lease.
 func (s *Store) acquireIdle(key string, e *entry, cancel context.CancelFunc) *Lease {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(ReconcileIdleWait)
 	for {
 		s.mu.Lock()
 		if s.closed || s.entries[key] != e {
