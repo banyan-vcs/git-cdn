@@ -113,7 +113,7 @@ go test -race ./...
 go vet ./...
 ```
 
-42 个文件中的 208 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
+47 个文件中的 224 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
 标准 Git 客户端驱动带认证的 `git http-backend` 运行 `go test -race`
 （[docs/testing.md](docs/testing.md)）。
 

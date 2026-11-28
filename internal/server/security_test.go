@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/testlog"
 
 	"github.com/stretchr/testify/require"
 )
@@ -68,7 +68,10 @@ func TestResponseBudgetStaysChargedUntilTransferEnds(t *testing.T) {
 	s, h := newCDN(t, f, func(c *config.Config) { c.MaxConcurrentGit = 1; c.MaxPackCacheBytes = -1 })
 	body := fetchBody(f.tip, "no-progress")
 	warm := responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
-	s.responses.limit = int64(len(warm) * 2)
+	// Each response is generated again, and two generations of the same
+	// fetch differ by a few bytes of compression. The slack covers that and
+	// is still far less than one more response.
+	s.responses.limit = int64(len(warm)*2 + 64)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	var wg sync.WaitGroup
@@ -96,7 +99,18 @@ func TestResponseBudgetStaysChargedUntilTransferEnds(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(s.store.Tmp, "response-*"))
 	require.NoError(t, err, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
 	require.Len(t, files, 2, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
-	require.EqualValues(t, s.responses.limit, s.responses.bytes(), "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
+	// Every spooled byte stays charged until its transfer ends, the charge
+	// never passes the budget, and what is left cannot hold a third response.
+	var spooled int64
+	for _, file := range files {
+		info, err := os.Stat(file)
+		require.NoError(t, err)
+		spooled += info.Size()
+	}
+	charge, limit := s.responses.bytes(), s.responses.limit
+	require.EqualValues(t, spooled, charge, "spooled bytes and the charge differ: files=%d spooled=%d charge=%d limit=%d", len(files), spooled, charge, limit)
+	require.LessOrEqual(t, charge, limit, "retained responses escaped the budget: spooled=%d charge=%d limit=%d", spooled, charge, limit)
+	require.Less(t, limit-charge, int64(len(warm)), "a third response still fits: spooled=%d charge=%d limit=%d", spooled, charge, limit)
 	require.EqualValues(t, 3, s.requests.active(), "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
 	releaseOnce.Do(func() { close(release) })
 	wg.Wait()
@@ -264,7 +278,7 @@ func TestCredentialHostPreventsCrossUpstreamForwarding(t *testing.T) {
 		"one": {URL: origin.URL, CredentialHost: "one.cdn.example"},
 		"two": {URL: origin.URL, CredentialHost: "two.cdn.example"},
 	}}
-	s, err := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(c, testlog.New(t))
 	require.NoError(t, err)
 	defer s.Close()
 	for _, test := range []struct {

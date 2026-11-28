@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"testing"
 
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
+	"gitlab.com/banyan-vcs/git-cdn/internal/testlog"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +25,7 @@ func githubTestServer(t *testing.T, metadata http.HandlerFunc) (*Server, *httpte
 		io.WriteString(w, "authentication required\n")
 	}))
 	api := httptest.NewServer(metadata)
-	s, err := New(config.Config{CacheDir: t.TempDir(), Upstreams: map[string]config.Upstream{"github": {URL: "https://github.com"}}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(config.Config{CacheDir: t.TempDir(), Upstreams: map[string]config.Upstream{"github": {URL: "https://github.com"}}}, testlog.New(t))
 	require.NoError(t, err)
 	s.githubAPI, _ = url.Parse(api.URL)
 	// Passthrough and probes use separate connection pools; both must

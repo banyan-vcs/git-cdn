@@ -119,7 +119,7 @@ go test -race ./...
 go vet ./...
 ```
 
-208 test functions across 42 files plus a fuzz target; CI runs
+224 test functions across 47 files plus a fuzz target; CI runs
 `go test -race` on Linux and macOS against an authenticated
 `git http-backend` with standard Git clients ([docs/testing.md](docs/testing.md)).
 

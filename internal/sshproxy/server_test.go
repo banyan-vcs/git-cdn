@@ -6,8 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
-	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -22,6 +20,7 @@ import (
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 	"gitlab.com/banyan-vcs/git-cdn/internal/server"
+	"gitlab.com/banyan-vcs/git-cdn/internal/testlog"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -181,7 +180,7 @@ func newSSHFixtureOptions(t *testing.T, lfs func(ssh.Channel, gitCommand) uint32
 		change(&c)
 	}
 	require.NoError(t, c.Validate())
-	backend, err := server.New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	backend, err := server.New(c, testlog.New(t))
 	require.NoError(t, err)
 	f.server, err = New(c, backend, options...)
 	require.NoError(t, err)

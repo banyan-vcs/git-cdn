@@ -87,7 +87,10 @@ func TestConcurrentHostKeyEnrollment(t *testing.T) {
 	settings := config.SSHUpstream{KnownHosts: filepath.Join(t.TempDir(), "known_hosts"), HostKeyPolicy: config.SSHHostKeyAcceptNew}
 	signer, _ := hostKey(t, t.TempDir(), "key")
 	remote := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The enrollments take the lock in turn and each one syncs a file and its
+	// directory; on a loaded host that alone can take seconds. This test is
+	// about the outcome, not the speed.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var workers sync.WaitGroup
 	results := make(chan error, 24)

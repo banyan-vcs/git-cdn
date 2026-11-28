@@ -22,6 +22,7 @@ import (
 	"gitlab.com/banyan-vcs/git-cdn/internal/config"
 	"gitlab.com/banyan-vcs/git-cdn/internal/nativegit"
 	"gitlab.com/banyan-vcs/git-cdn/internal/protocol"
+	"gitlab.com/banyan-vcs/git-cdn/internal/testlog"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,7 +172,7 @@ func (f *fixture) commit(t *testing.T, content string) {
 }
 
 func newCDN(t *testing.T, f *fixture, modify func(*config.Config)) (*Server, *httptest.Server) {
-	return newCDNWithLogger(t, f, modify, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newCDNWithLogger(t, f, modify, testlog.New(t))
 }
 
 func newCDNWithLogger(t *testing.T, f *fixture, modify func(*config.Config), logger *slog.Logger) (*Server, *httptest.Server) {
@@ -232,7 +233,7 @@ func newYAMLCDN(t *testing.T, body string) (*Server, *httptest.Server) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0600))
 	c, err := config.Load(path)
 	require.NoError(t, err)
-	s, err := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(c, testlog.New(t))
 	require.NoError(t, err)
 	h := httptest.NewServer(s)
 	t.Cleanup(func() { h.Close(); s.Close() })

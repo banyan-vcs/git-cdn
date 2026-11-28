@@ -157,6 +157,7 @@ jobs:
 
       - name: Flake amplification for the server package (non-blocking)
         if: matrix.os == 'macos-15' && matrix.go == 'module'
+        id: amplify
         continue-on-error: true
         run: |
           set +e
@@ -170,6 +171,19 @@ jobs:
             done || true
           fi
           exit "$status"
+
+      # The annotations keep a few lines around each failure. The full
+      # output, with the service log a failed test prints, is kept here.
+      - name: Keep the test output
+        if: failure() || steps.amplify.conclusion == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-test-${{ matrix.go }}-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/gotest.log
+            ${{ runner.temp }}/amplify.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Probe native Git protocol behavior
         run: go run ./scripts/protocol-probe
