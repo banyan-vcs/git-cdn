@@ -139,10 +139,14 @@ func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io
 	defer cancel()
 	cmd := exec.CommandContext(childCtx, r.Binary, args...)
 	output := &cancellingWriter{w: stdout, cancel: cancel}
-	cmd.Dir, cmd.Stdin, cmd.Stdout = dir, stdin, output
+	// Git's stderr can contain upstream-provided text or authentication
+	// data: it is kept only to classify a failure and never leaves Run.
+	problems := &stderrTail{}
+	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, stdin, output, problems
 	cmd.Env = Environment(env)
-	cmd.Stderr = io.Discard
 	configureProcess(cmd)
+	// The time a terminated Git process gets to exit, and its children to
+	// let go of the pipes, before it is killed and the pipes are closed.
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
@@ -151,8 +155,7 @@ func (r *Runner) Run(ctx context.Context, dir string, stdin io.Reader, stdout io
 		if output.err != nil {
 			return fmt.Errorf("git output failed: %w", output.err)
 		}
-		// Git's stderr can contain upstream-provided text or authentication data.
-		return fmt.Errorf("git operation failed: %w", err)
+		return &Error{Kind: failureKind(problems.bytes()), Err: err}
 	}
 	return nil
 }
