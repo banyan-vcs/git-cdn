@@ -1,0 +1,13 @@
+# Scrapes every instance of the node service on the compose network.
+# Full container names (the project name is pinned in compose.yaml) keep
+# the instance labels stable across recreations; add node-3, node-4, ...
+# when scaling further — the per-instance short names docker compose
+# prints are not DNS names on the network.
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: git-cdn
+    static_configs:
+      - targets:
+          - git-cdn-cluster-node-1:8080
+          - git-cdn-cluster-node-2:8080

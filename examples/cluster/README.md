@@ -86,7 +86,7 @@ git clone http://git-cdn.example.com/octocat/Hello-World.git
 git config --global url."http://git-cdn.example.com/".insteadOf "https://github.com/"
 ```
 
-## 查看存储
+## 查看存储与指标
 
 每个实例的 `/metrics` 在内部网络的 8080 上（traefik 只对外分发 80→HTTP、
 22→SSH）；聚合计数（`cache_entries`、`cache_bytes`、`repository_count`）从这里取，
@@ -98,6 +98,18 @@ docker compose exec --index=1 node ls /var/lib/git-cdn/caches/repos/
 
 目录名是身份哈希（上游 URL + 仓库路径 + 对象格式），不直接暴露仓库名；
 这是设计——指标和存储都不带仓库名。`/metrics` 与本示例都只做聚合视图。
+
+要常驻采集就带上 metrics profile，Prometheus 按容器名抓每个实例，
+UI 和外部 Grafana 的接入点在 `127.0.0.1:19090`（`PROM_PORT` 可改），
+时序数据保留 15 天：
+
+```sh
+docker compose --profile metrics up -d --build --wait --scale node=2
+```
+
+扩到 3 个实例以上时，在 `prometheus.yml` 的 targets 里补 `node-3` 起
+的容器名。看板在仓库的 `dashboards/git-cdn.json`，导入任何 Grafana
+后把数据源指到 `http://<docker-host>:19090` 即可。
 
 ## 换真实源站
 
@@ -120,9 +132,10 @@ docker compose exec --index=1 node ls /var/lib/git-cdn/caches/repos/
 
 | 文件 | 作用 |
 | --- | --- |
-| `compose.yaml` | 拓扑：lb、node、origin |
+| `compose.yaml` | 拓扑：lb、node、origin；`metrics` profile 附带 Prometheus |
 | `Dockerfile.node` | 节点镜像：从仓库根构建二进制 + 烘焙宿主键 |
 | `Dockerfile.origin` | 演示源站：SSH 密码 + git-shell，HTTP lighttpd + git http-backend |
 | `node.yaml` / `node.offline.yaml` | 实例配置（github 单站点 / 内置 origin），`GIT_CDN_NODE_CONFIG` 切换 |
+| `prometheus.yml` | 按容器名抓每个 node 实例（metrics profile 用） |
 | `gen-keys.sh` | 生成/重生成全部键材料和 known_hosts |
 | `keys/`、`origin_known_hosts`、`client_known_hosts` | 生成的键与信任文件（gitignore，不入库） |
