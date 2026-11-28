@@ -1,0 +1,74 @@
+# Single-host git-cdn cluster: one load balancer fans HTTP and SSH out of
+# the same DNS name to scaled git-cdn instances, each with its own cache
+# volume and the same baked SSH host key. A demo origin makes the SSH
+# password path and offline verification possible without a real upstream.
+# See README.md in this directory.
+#
+#   docker compose up -d --build --wait --scale node=2
+#
+# HTTP  http://127.0.0.1:8080/octocat/Hello-World.git
+# SSH   ssh://git@127.0.0.1:2222/demo/repo.git   (password: demo)
+#
+# Offline (when github is unreachable): prefix the up command with
+#   GIT_CDN_NODE_CONFIG=./node.offline.yaml
+
+name: git-cdn-cluster
+
+services:
+  lb:
+    image: traefik:v3.7
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.ssh.address=:22
+      - --log.level=INFO
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
+      - "127.0.0.1:${SSH_PORT:-2222}:22"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # One service, both transports: each instance serves HTTP and SSH from
+  # one cache, the way the single binary does outside the cluster.
+  node:
+    image: git-cdn-cluster/node:local
+    build:
+      context: ../..
+      dockerfile: examples/cluster/Dockerfile.node
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    volumes:
+      - /var/lib/git-cdn
+      - type: bind
+        source: ${GIT_CDN_NODE_CONFIG:-./node.yaml}
+        target: /etc/git-cdn/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: git-cdn-cluster_default
+      traefik.http.routers.node.entrypoints: web
+      traefik.http.routers.node.rule: PathPrefix(`/`)
+      traefik.http.services.node.loadbalancer.server.port: "8080"
+      traefik.http.services.node.loadbalancer.healthcheck.path: /healthz
+      traefik.tcp.routers.node-ssh.entrypoints: ssh
+      traefik.tcp.routers.node-ssh.rule: HostSNI(`*`)
+      traefik.tcp.services.node-ssh.loadbalancer.server.port: "2222"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  origin:
+    image: git-cdn-cluster/origin:local
+    build:
+      context: .
+      dockerfile: Dockerfile.origin
+    restart: unless-stopped

@@ -60,6 +60,10 @@ GIT_SSH_COMMAND='sshpass -f ~/.git-cdn/password ssh -p 2222' \
 
 The client owns the password/token file. The proxy receives its value over SSH and does not mount or read that file.
 
+## Cluster example
+
+[examples/cluster](../examples/cluster) scales the same image out behind one load balancer: HTTP and SSH leave the same DNS name, each instance keeps its own cache volume, and the SSH host key is baked into the image so every instance presents one identity. A demo origin with password SSH and anonymous HTTP makes both paths verifiable offline. See the example's README for the topology, the offline variant and the key lifecycle.
+
 ## State and operations
 
 `git-cdn-data` mounts `/var/lib/git-cdn`: `caches/` holds repository objects and temporary staging, and the persistent SSH host key lives beside it. Restart, rebuild and ordinary Compose down preserve this volume. YAML controls LRU admission, geometric repack and 14-day GC retention; temporary staging needs additional space beyond the persistent budget.

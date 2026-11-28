@@ -6,3 +6,6 @@
 coverage.out
 /docker/known_hosts
 /docker/config.local.yaml
+/examples/cluster/keys/
+/examples/cluster/origin_known_hosts
+/examples/cluster/client_known_hosts

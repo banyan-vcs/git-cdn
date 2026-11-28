@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+# A demo origin serving the same seeded repository over SSH (password
+# auth + git-shell) and HTTP (lighttpd + git http-backend, anonymous
+# read). git-cdn forwards HTTP upstream traffic and SSH usernames and
+# passwords here, so the whole chain load-balancer -> node -> origin is
+# verifiable without a real upstream account or network access. Replace
+# it with real origins in production.
+#
+# The repository lives at /srv/git/demo/repo.git: reachable over SSH as
+# demo/repo.git relative to the git user's home, and over HTTP through
+# the /git alias as PATH_INFO /demo/repo.git.
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server lighttpd git curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -m -d /srv/git -s /usr/bin/git-shell git \
+ && echo 'git:demo' | chpasswd \
+ && mkdir -p /run/sshd /srv/git /srv/www
+
+COPY keys/origin/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
+COPY keys/origin/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ed25519_key.pub
+
+# Seed demo/repo.git: history is reproducible through fixed dates.
+RUN git config --global user.email demo@example.test \
+ && git config --global user.name demo \
+ && git init -q --bare /srv/git/demo/repo.git \
+ && git clone -q /srv/git/demo/repo.git /tmp/seed \
+ && cd /tmp/seed \
+ && echo 'cluster demo repository' > README \
+ && git add -A \
+ && GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' \
+    git commit -q -m 'demo commit' \
+ && GIT_AUTHOR_DATE='2026-01-02T00:00:00Z' GIT_COMMITTER_DATE='2026-01-02T00:00:00Z' \
+    git commit -q --allow-empty -m 'second commit' \
+ && git branch -M main \
+ && git push -q origin main \
+ && git -C /srv/git/demo/repo.git symbolic-ref HEAD refs/heads/main \
+ && cd / && rm -rf /tmp/seed \
+ && chmod 600 /etc/ssh/ssh_host_ed25519_key \
+ && chown -R git:git /srv/git
+
+# http-backend behind the /git alias. lighttpd's mod_cgi hands the CGI the
+# full request path as PATH_INFO, so a wrapper strips the alias prefix and
+# points the backend at the repository root.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      'PATH_INFO="${PATH_INFO#/git}"' \
+      'export GIT_PROJECT_ROOT=/srv/git GIT_HTTP_EXPORT_ALL=1 PATH_INFO' \
+      'exec /usr/lib/git-core/git-http-backend' \
+      > /srv/www/git \
+ && chmod 755 /srv/www/git \
+ && chown git:git /srv/www/git \
+ && printf '%s\n' \
+      'server.modules = ( "mod_alias", "mod_cgi" )' \
+      'server.document-root = "/srv/www"' \
+      'server.port = 80' \
+      'server.username = "git"' 'server.groupname = "git"' \
+      'alias.url = ( "/git" => "/srv/www/git" )' \
+      '$HTTP["url"] =~ "^/git" { cgi.assign = ( "" => "" ) }' \
+      > /etc/lighttpd/lighttpd.conf
+
+RUN printf '%s\n' \
+    'PasswordAuthentication yes' \
+    'KbdInteractiveAuthentication no' \
+    'PermitRootLogin no' \
+    'AllowUsers git' \
+    'UsePAM no' \
+    'AcceptEnv GIT_PROTOCOL' \
+    'HostKey /etc/ssh/ssh_host_ed25519_key' \
+    > /etc/ssh/sshd_config
+
+EXPOSE 22 80
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -sf "http://127.0.0.1/git/demo/repo.git/info/refs?service=git-upload-pack" >/dev/null || exit 1
+CMD ["/bin/sh", "-c", "/usr/sbin/sshd -e && exec /usr/sbin/lighttpd -D -f /etc/lighttpd/lighttpd.conf"]

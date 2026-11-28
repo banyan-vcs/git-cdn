@@ -1,0 +1,19 @@
+# The same shape with the HTTP upstream on the bundled origin, for
+# networks that cannot reach github. Select with
+# GIT_CDN_NODE_CONFIG=./node.offline.yaml before docker compose up.
+mode: single
+upstream:
+  url: http://origin/git
+listen: 0.0.0.0:8080
+allow_insecure_http: true
+cache_dir: /var/lib/git-cdn/caches
+ssh:
+  listen: 0.0.0.0:2222
+  host_key: /var/lib/git-cdn/ssh_host_ed25519_key
+  allowed_users: [git]
+  mode: single
+  upstream:
+    address: origin:22
+    user: git
+    known_hosts: /etc/git-cdn/origin_known_hosts
+    host_key_policy: strict
