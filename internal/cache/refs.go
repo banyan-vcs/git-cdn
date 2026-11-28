@@ -152,6 +152,8 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) (err e
 	}
 	var updates strings.Builder
 	var additional int64
+	// names ends up holding every reference the transaction writes.
+	var names []string
 	for _, line := range strings.Split(strings.TrimSpace(string(current)), "\n") {
 		if line == "" {
 			continue
@@ -167,15 +169,17 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) (err e
 			}
 		} else {
 			fmt.Fprintf(&updates, "delete %s %s\n", fields[0], fields[1])
+			names = append(names, fields[0])
 		}
 	}
-	var names []string
 	for name := range desired {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(&updates, "update %s %s\n", name, desired[name])
+		if oid, ok := desired[name]; ok {
+			fmt.Fprintf(&updates, "update %s %s\n", name, oid)
+		}
 	}
 	oldHead, err := l.store.Git.Head(ctx, l.Dir)
 	if err != nil {
@@ -213,7 +217,7 @@ func (l *Lease) SyncRefs(ctx context.Context, snapshot protocol.Snapshot) (err e
 			return err
 		}
 	}
-	if err := clearStaleRefLocks(l.Dir); err != nil {
+	if err := clearStaleRefWrites(l.Dir, names); err != nil {
 		return err
 	}
 	if updates.Len() > 0 {

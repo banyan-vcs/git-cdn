@@ -461,10 +461,12 @@ func (l *Lease) rewrite(ctx context.Context, collect bool, now time.Time) (bool,
 		// Remove expired grace pins only after all retained pack data is installed.
 		if len(expired) > 0 {
 			var updates strings.Builder
+			pins := make([]string, 0, len(expired))
 			for _, oid := range expired {
 				fmt.Fprintf(&updates, "delete refs/cache/retained/%s %s\n", oid, oid)
+				pins = append(pins, retainedPrefix+oid)
 			}
-			if err := clearStaleRefLocks(l.Dir); err != nil {
+			if err := clearStaleRefWrites(l.Dir, pins); err != nil {
 				return false, err
 			}
 			if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {

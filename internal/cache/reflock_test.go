@@ -34,6 +34,33 @@ func staleRefLocks(t *testing.T, dir, format string, refs ...string) {
 	}
 }
 
+// staleTables plants the tables a killed reftable writer leaves outside the
+// table list: the temporary file it was writing and the finished table it
+// had renamed into place without publishing the list.
+func staleTables(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"0x000000000000-0x000000000000-00000000.temp.aB3dEf", "0x000000000000-0x000000000000-00000000.ref"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "reftable", name), nil, 0600))
+	}
+}
+
+// requireListedTablesOnly fails for any file in the reftable directory that
+// is neither the table list nor a table it names.
+func requireListedTablesOnly(t *testing.T, dir string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "reftable", "tables.list"))
+	require.NoError(t, err)
+	listed := make(map[string]bool)
+	for _, line := range strings.Fields(string(data)) {
+		listed[line] = true
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "reftable"))
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.True(t, entry.Name() == "tables.list" || listed[entry.Name()], "%s is not a published table", entry.Name())
+	}
+}
+
 func requireNoRefLocks(t *testing.T, dir string) {
 	t.Helper()
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
@@ -52,10 +79,10 @@ func snapshotOf(ref, name string) protocol.Snapshot {
 	return protocol.Snapshot{Refs: []protocol.Ref{{Name: "HEAD", OID: ref, Symref: name}, {Name: name, OID: ref}}}
 }
 
-// Every reference transaction in a scope runs under the exclusive gate, so a
-// lock found there belongs to a writer that has already been reaped. The
-// scope must keep writing references instead of failing until the file is
-// removed by hand.
+// Every reference transaction in a scope runs under the exclusive gate, so
+// whatever a killed writer left there belongs to a process that has already
+// been reaped. The scope must keep writing references instead of failing
+// until the files are removed by hand.
 func TestRefWritesDiscardLocksOfAKilledWriter(t *testing.T) {
 	for _, format := range refStorageFormats {
 		t.Run(format, func(t *testing.T) {
@@ -63,13 +90,20 @@ func TestRefWritesDiscardLocksOfAKilledWriter(t *testing.T) {
 			defer l.Release()
 			latest, older := roots[len(roots)-1], roots[len(roots)-2]
 
-			// Reconciliation: the lock sits on the refs the transaction moves.
+			// Reconciliation: the leftovers sit on the refs the transaction moves.
 			staleRefLocks(t, l.Dir, format, "refs/cache/roots/"+latest, "refs/cache/upstream/heads/main")
+			if format == "reftable" {
+				staleTables(t, l.Dir)
+			}
 			require.NoError(t, l.SyncRefs(context.Background(), snapshotOf(older, "refs/heads/main")))
 			require.Equal(t, "refs/cache/upstream/heads/main", maintenanceGit(t, s.Git, l.Dir, "symbolic-ref", "HEAD"))
 			require.Equal(t, older, maintenanceGit(t, s.Git, l.Dir, "rev-parse", "refs/cache/roots/"+older))
 			require.Equal(t, latest, maintenanceGit(t, s.Git, l.Dir, "rev-parse", retainedPrefix+latest))
 			require.Equal(t, "", maintenanceGit(t, s.Git, l.Dir, "for-each-ref", "--format=%(refname)", "refs/cache/roots/"+latest))
+			requireNoRefLocks(t, l.Dir)
+			if format == "reftable" {
+				requireListedTablesOnly(t, l.Dir)
+			}
 
 			// Reconciliation that only moves HEAD meets the lock alone.
 			staleRefLocks(t, l.Dir, format)
@@ -94,6 +128,28 @@ func TestRefWritesDiscardLocksOfAKilledWriter(t *testing.T) {
 	}
 }
 
+// A files repository is only asked about the references a transaction
+// writes. A lock elsewhere neither fails that transaction nor survives the
+// one that does touch its reference.
+func TestRefWritesLeaveLocksTheyDoNotNeed(t *testing.T) {
+	_, l, roots := populatedLease(t, 32, "files")
+	defer l.Release()
+	latest := roots[len(roots)-1]
+	untouched := filepath.Join(l.Dir, "refs", "cache", "upstream", "heads", "topic.lock")
+	require.NoError(t, os.MkdirAll(filepath.Dir(untouched), 0700))
+	require.NoError(t, os.WriteFile(untouched, nil, 0600))
+
+	require.NoError(t, l.SyncRefs(context.Background(), snapshotOf(latest, "refs/heads/main")))
+	_, err := os.Stat(untouched)
+	require.NoError(t, err, "a lock on a reference outside the transaction was removed")
+
+	withTopic := snapshotOf(latest, "refs/heads/main")
+	withTopic.Refs = append(withTopic.Refs, protocol.Ref{Name: "refs/heads/topic", OID: latest})
+	require.NoError(t, l.SyncRefs(context.Background(), withTopic))
+	require.Equal(t, latest, maintenanceGit(t, l.store.Git, l.Dir, "rev-parse", "refs/cache/upstream/heads/topic"))
+	requireNoRefLocks(t, l.Dir)
+}
+
 // Collecting expired grace pins deletes references too; a lock left by an
 // earlier writer must not keep the pins, and the history they protect,
 // forever.
@@ -110,6 +166,9 @@ func TestGCExpiresGracePinsOverAKilledRefWriter(t *testing.T) {
 			require.NoError(t, err)
 
 			staleRefLocks(t, l.Dir, format, retainedPrefix+retired)
+			if format == "reftable" {
+				staleTables(t, l.Dir)
+			}
 			_, err = l.rewrite(context.Background(), true, now.Add(15*24*time.Hour))
 			require.NoError(t, err)
 			retained, err := readRetention(l.Dir)
@@ -117,6 +176,9 @@ func TestGCExpiresGracePinsOverAKilledRefWriter(t *testing.T) {
 			require.Empty(t, retained)
 			require.Equal(t, "", maintenanceGit(t, s.Git, l.Dir, "for-each-ref", "--format=%(refname)", retainedPrefix))
 			requireNoRefLocks(t, l.Dir)
+			if format == "reftable" {
+				requireListedTablesOnly(t, l.Dir)
+			}
 		})
 	}
 }

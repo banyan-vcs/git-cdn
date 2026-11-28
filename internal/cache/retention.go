@@ -90,6 +90,8 @@ func (l *Lease) expireRetained(ctx context.Context, dir string, now time.Time) (
 	}
 	var expired []string
 	var updates strings.Builder
+	// writes names every reference the transaction below touches.
+	var writes []string
 	present := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(string(refs)), "\n") {
 		if line == "" {
@@ -106,6 +108,7 @@ func (l *Lease) expireRetained(ctx context.Context, dir string, now time.Time) (
 		}
 		if !now.Before(time.Unix(0, values[oid]).Add(l.store.repack.GCRetention)) {
 			fmt.Fprintf(&updates, "delete %s %s\n", fields[0], oid)
+			writes = append(writes, fields[0])
 			expired = append(expired, oid)
 			delete(values, oid)
 		}
@@ -116,6 +119,7 @@ func (l *Lease) expireRetained(ctx context.Context, dir string, now time.Time) (
 			// Recreate its grace pin rather than pruning recent history.
 			if now.Before(time.Unix(0, values[oid]).Add(l.store.repack.GCRetention)) {
 				fmt.Fprintf(&updates, "update %s%s %s\n", retainedPrefix, oid, oid)
+				writes = append(writes, retainedPrefix+oid)
 			} else {
 				delete(values, oid)
 			}
@@ -124,7 +128,7 @@ func (l *Lease) expireRetained(ctx context.Context, dir string, now time.Time) (
 	if updates.Len() > 0 {
 		// dir is either the scope under the exclusive gate or this
 		// maintenance's private staging copy of it, lock included.
-		if err := clearStaleRefLocks(dir); err != nil {
+		if err := clearStaleRefWrites(dir, writes); err != nil {
 			return nil, err
 		}
 		if err := l.store.Git.Run(ctx, dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {

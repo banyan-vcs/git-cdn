@@ -110,8 +110,10 @@ func (l *Lease) publish(ctx context.Context, stage string, roots []string, exist
 		}
 	}
 	var updates strings.Builder
+	writes := make([]string, 0, len(roots))
 	for _, root := range roots {
 		fmt.Fprintf(&updates, "update refs/cache/roots/%s %s\n", root, root)
+		writes = append(writes, "refs/cache/roots/"+root)
 	}
 	if updates.Len() > 0 {
 		budget, err := refUpdateBudget(l.Dir, updates.Len())
@@ -130,7 +132,7 @@ func (l *Lease) publish(ctx context.Context, stage string, roots []string, exist
 			return err
 		}
 	}
-	if err := clearStaleRefLocks(l.Dir); err != nil {
+	if err := clearStaleRefWrites(l.Dir, writes); err != nil {
 		return err
 	}
 	if err := l.store.Git.Run(ctx, l.Dir, strings.NewReader(updates.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {

@@ -136,15 +136,17 @@ func (s *Store) mergeLegacy(ctx context.Context, parent string, scopes []string)
 	// Duplicate roots across credentials must appear only once in the transaction.
 	unique := make(map[string]bool)
 	var transaction strings.Builder
+	var writes []string
 	for _, line := range strings.Split(updates.String(), "\n") {
 		if line != "" && !unique[line] {
 			unique[line] = true
 			transaction.WriteString(line + "\n")
+			writes = append(writes, strings.Fields(line)[1])
 		}
 	}
 	if transaction.Len() > 0 {
 		// The previous attempt may have been stopped inside its transaction.
-		if err := clearStaleRefLocks(repo); err != nil {
+		if err := clearStaleRefWrites(repo, writes); err != nil {
 			return err
 		}
 		if err := s.Git.Run(ctx, repo, strings.NewReader(transaction.String()), io.Discard, nil, "update-ref", "--stdin"); err != nil {
