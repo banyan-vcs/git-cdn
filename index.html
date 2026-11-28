@@ -205,7 +205,7 @@
         an upstream response — HIT counts objects, not reused packs</div>
     </div>
     <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
-      The behavior is pinned by 208 test functions across 42 files plus a
+      The behavior is pinned by 224 test functions across 47 files plus a
       fuzz target, race-enabled in CI, driving an authenticated
       <code>git http-backend</code> with standard Git clients —
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>.</p>
@@ -307,7 +307,10 @@
       <div class="card"><h3><span class="glyph">◍</span>Observable by default</h3>
         <p><code>/healthz</code> and <code>/metrics</code>: local,
         hydration, passthrough and authorization-denial counters, cache
-        bytes, evictions, in-flight requests. Structured JSON logs follow each
+        bytes, evictions, in-flight requests, and the repositories in
+        aggregate — how many, how idle, how large, how they split over
+        sites — without naming one. A Grafana dashboard kept in the
+        repository plots all of it. Structured JSON logs follow each
         request through its probe, hydration and pack preparation with its
         cache, pack-cache and auth-cache outcome; <code>-log-level DEBUG</code>
         adds native Git commands and queue times. Logs omit credentials and

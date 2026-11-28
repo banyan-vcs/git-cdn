@@ -194,7 +194,7 @@
         原站响应——HIT 针对对象，不是复用的 pack</div>
     </div>
     <p style="margin-top:26px;max-width:46em;color:var(--ink-soft)">
-      这些行为由 42 个文件中的 208 个测试函数和 1 个 fuzz 入口钉死，CI
+      这些行为由 47 个文件中的 224 个测试函数和 1 个 fuzz 入口钉死，CI
       带 race 检测运行，
       用标准 Git 客户端驱动带认证的 <code>git http-backend</code>——
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/testing.md">docs/testing.md</a>。</p>
@@ -275,7 +275,9 @@
         endpoint 和对象签名 URL——LFS 数据留在原站的存储上。</p></div>
       <div class="card"><h3><span class="glyph">◍</span>默认可观测</h3>
         <p><code>/healthz</code> 与 <code>/metrics</code>：本地、补齐、
-        透传、鉴权拒绝计数，缓存字节数、淘汰、活动请求数。结构化 JSON
+        透传、鉴权拒绝计数，缓存字节数、淘汰、活动请求数，以及不带仓库名的
+        仓库概览——数量、空闲时长、大小分布、按站点拆分；仓库里带一份 Grafana
+        看板。结构化 JSON
         日志带着每个请求的缓存、pack 缓存和鉴权缓存结果，走过探测、补齐
         和 pack 准备；<code>-log-level DEBUG</code> 加上原生 Git 命令和
         排队时间。日志不含凭据和原站 Git stderr。</p></div>
