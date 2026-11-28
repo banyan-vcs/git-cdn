@@ -353,7 +353,7 @@ nav.main a,
 }
 .card .glyph {
   font-size: 18px;
-  color: var(--mark);
+  color: var(--ctl);
 }
 .card p {
   color: var(--ink-soft);
