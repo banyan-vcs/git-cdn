@@ -97,8 +97,8 @@ func TestResponseBudgetStaysChargedUntilTransferEnds(t *testing.T) {
 		require.EqualValues(t, expected, w.header.Get("X-GitCDN-Cache-Status"), "response %d: %v", i, w.header)
 	}
 	files, err := filepath.Glob(filepath.Join(s.store.Tmp, "response-*"))
-	require.NoError(t, err, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
-	require.Len(t, files, 2, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
+	require.NoError(t, err, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.Load().active(), err)
+	require.Len(t, files, 2, "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.Load().active(), err)
 	// Every spooled byte stays charged until its transfer ends, the charge
 	// never passes the budget, and what is left cannot hold a third response.
 	var spooled int64
@@ -111,14 +111,14 @@ func TestResponseBudgetStaysChargedUntilTransferEnds(t *testing.T) {
 	require.EqualValues(t, spooled, charge, "spooled bytes and the charge differ: files=%d spooled=%d charge=%d limit=%d", len(files), spooled, charge, limit)
 	require.LessOrEqual(t, charge, limit, "retained responses escaped the budget: spooled=%d charge=%d limit=%d", spooled, charge, limit)
 	require.Less(t, limit-charge, int64(len(warm)), "a third response still fits: spooled=%d charge=%d limit=%d", spooled, charge, limit)
-	require.EqualValues(t, 3, s.requests.active(), "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.active(), err)
+	require.EqualValues(t, 3, s.requests.Load().active(), "retained responses escaped the budget: files=%d bytes=%d requests=%d err=%v", len(files), s.responses.bytes(), s.requests.Load().active(), err)
 	releaseOnce.Do(func() { close(release) })
 	wg.Wait()
 	files, err = filepath.Glob(filepath.Join(s.store.Tmp, "response-*"))
 	require.NoError(t, err, "completed responses retained disk or request reservations")
 	require.Len(t, files, 0, "completed responses retained disk or request reservations")
 	require.EqualValues(t, 0, s.responses.bytes(), "completed responses retained disk or request reservations")
-	require.EqualValues(t, 0, s.requests.active(), "completed responses retained disk or request reservations")
+	require.EqualValues(t, 0, s.requests.Load().active(), "completed responses retained disk or request reservations")
 }
 
 type unreadBody struct{}
@@ -129,9 +129,9 @@ func TestRequestOverloadRejectsBeforeBodyAndKeepsHealthAvailable(t *testing.T) {
 	f := newFixture(t)
 	s, _ := newCDN(t, f, func(c *config.Config) { c.MaxConcurrentRequests = 1 })
 	// The queue wait is exercised separately; here the slot stays taken.
-	s.requests.wait = 0
-	require.True(t, s.requests.acquire(context.Background()), "cannot acquire request slot")
-	defer s.requests.release()
+	s.requests.Load().wait = 0
+	require.True(t, s.requests.Load().acquire(context.Background()), "cannot acquire request slot")
+	defer s.requests.Load().release()
 	r := httptest.NewRequest("POST", "/gitlab/Group/Repo.git/git-upload-pack", unreadBody{})
 	r.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
@@ -316,7 +316,7 @@ func TestRequestTimeoutCancelsStalledUpstream(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		require.FailNow(t, "test failed", "upstream survived request timeout")
 	}
-	require.EqualValues(t, 0, s.requests.active(), "timed-out upstream retained a request slot")
+	require.EqualValues(t, 0, s.requests.Load().active(), "timed-out upstream retained a request slot")
 }
 
 func TestWriteIdleTimeoutStopsSlowClient(t *testing.T) {

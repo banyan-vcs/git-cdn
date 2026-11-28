@@ -45,7 +45,6 @@ type Server struct {
 	probes           probeFlights
 	authFailures     authThrottle
 	outboundProxy    *url.URL
-	maxRefs          int64
 }
 
 func New(c config.Config, backend *server.Server, options ...Option) (*Server, error) {
@@ -67,7 +66,7 @@ func New(c config.Config, backend *server.Server, options ...Option) (*Server, e
 		return nil, fmt.Errorf("invalid SSH host key")
 	}
 	g := backend.NativeGit()
-	s := &Server{cfg: c, backend: backend, git: g, signer: signer, slots: make(chan struct{}, c.SSH.MaxConnections), connections: map[net.Conn]bool{}, logger: slog.Default(), maxRefs: c.MaxRefsBytes}
+	s := &Server{cfg: c, backend: backend, git: g, signer: signer, slots: make(chan struct{}, c.SSH.MaxConnections), connections: map[net.Conn]bool{}, logger: slog.Default()}
 	if c.UpstreamProxy != "" {
 		// Validated by the configuration loader.
 		s.outboundProxy, _ = url.Parse(c.UpstreamProxy)
@@ -80,6 +79,14 @@ func New(c config.Config, backend *server.Server, options ...Option) (*Server, e
 
 func (s *Server) Stats() (uint64, uint64, uint64) {
 	return s.local.Load(), s.forwarded.Load(), s.hydrations.Load()
+}
+
+// SessionCount reports live SSH connections for the backend's status
+// endpoint.
+func (s *Server) SessionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.connections)
 }
 
 func (s *Server) Serve(listener net.Listener) error {
@@ -258,9 +265,9 @@ func (s *Server) handle(conn net.Conn) {
 		}
 	}
 	peer, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	idleTimeout, _ := time.ParseDuration(s.cfg.WriteIdleTimeout)
+	tune := s.backend.CurrentTuning()
 	clock := &sessionClock{conn: conn}
-	transport := &idleConn{Conn: conn, timeout: idleTimeout, touch: clock.touch}
+	transport := &idleConn{Conn: conn, timeout: tune.WriteIdleTimeout, touch: clock.touch}
 	var password []byte
 	// Leave PublicKeyCallback unset so only password authentication is offered.
 	sshConfig := &ssh.ServerConfig{
@@ -289,8 +296,7 @@ func (s *Server) handle(conn net.Conn) {
 	}
 	defer client.Close()
 	defer func() { clear(password) }()
-	timeout, _ := time.ParseDuration(s.cfg.RequestTimeout)
-	clock.timeout = timeout
+	clock.timeout = tune.RequestTimeout
 	bound, cancel := context.WithCancelCause(base)
 	// The session context keeps a Deadline: the idle horizon, which moves
 	// with activity. Embedders deriving their own timeouts from it see the
@@ -300,7 +306,7 @@ func (s *Server) handle(conn net.Conn) {
 	transport.enabled.Store(true)
 	watchDone := make(chan struct{})
 	defer close(watchDone)
-	go clock.watch(timeout, watchDone, cancel)
+	go clock.watch(tune.RequestTimeout, watchDone, cancel)
 	go func() {
 		<-ctx.Done()
 		conn.Close()
@@ -457,6 +463,16 @@ func (s *Server) session(ctx context.Context, ch ssh.Channel, requests <-chan *s
 				request.Reply(false, nil)
 				return
 			}
+			if s.backend.Draining() {
+				// The node is not taking new work; the client sees the same
+				// shape of failure an origin error produces, with the reason
+				// on stderr instead of an opaque channel rejection.
+				request.Reply(true, nil)
+				go ssh.DiscardRequests(requests)
+				io.WriteString(ch.Stderr(), "git-cdn: node is draining\n")
+				ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{1}))
+				return
+			}
 			if s.sessionContext != nil {
 				info := SessionInfo{User: user, Command: command.name, Repository: command.repo, Operation: command.operation}
 				if enriched := s.sessionContext(ctx, info); enriched != nil {
@@ -521,7 +537,8 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 	if command.name != "git-upload-pack" || !protocol.IsV2(version) {
 		return passthrough(nil)
 	}
-	advertisement, err := readMessage(origin.out, s.cfg.MaxRefsBytes)
+	tune := s.backend.CurrentTuning()
+	advertisement, err := readMessage(origin.out, tune.MaxRefsBytes)
 	if err != nil {
 		return 1
 	}
@@ -532,7 +549,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		return passthrough(nil)
 	}
 	for {
-		data, err := readBoundedMessage(ch, s.cfg.MaxRequestBytes, protocol.MaxCommandPackets)
+		data, err := readBoundedMessage(ch, tune.MaxRequestBytes, protocol.MaxCommandPackets)
 		if err == io.EOF {
 			return 0
 		}
@@ -547,7 +564,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 			if _, err := origin.in.Write(data); err != nil {
 				return 1
 			}
-			response, err := readMessage(origin.out, s.cfg.MaxRefsBytes)
+			response, err := readMessage(origin.out, tune.MaxRefsBytes)
 			if err != nil {
 				return 1
 			}
@@ -559,8 +576,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		if fetch.Command != "fetch" || !fetch.Supported || !fetch.Done || len(fetch.Wants) == 0 {
 			return passthrough(data)
 		}
-		probeTimeout, _ := time.ParseDuration(s.cfg.UpstreamTimeout)
-		refs, err := s.sharedRefs(ctx, o, password, probeTimeout)
+		refs, err := s.sharedRefs(ctx, o, password, tune.AuthTimeout)
 		if err != nil || !refs.Allows(fetch.Wants) {
 			if err == nil {
 				logging.Logger(ctx, s.logger).InfoContext(ctx, "SSH fetch forwarded", "reason", "unadvertised_oid")

@@ -443,7 +443,7 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 func (s *Server) prepareObjects(ctx context.Context, identity, site string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (file *responseFile, status string, packHit bool, err error) {
 	started := time.Now()
 	phase := "pack_lookup"
-	ctx, cancel := context.WithTimeout(ctx, s.gitTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.tune.Load().GitTimeout)
 	defer cancel()
 	scope := s.store.Key(identity)
 	defer func() {
@@ -553,7 +553,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity, site string, fetc
 	}
 	phase = "hydrate"
 	roots := unique(fetch.Wants)
-	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.fetchTimeout)
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.tune.Load().FetchTimeout)
 	hit, err := ensure(fetchCtx, lease, roots)
 	fetchCancel()
 	if err != nil {
@@ -580,7 +580,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity, site string, fetc
 			return nil, "", false, err
 		}
 		roots = unique(append(roots, tags...))
-		fetchCtx, fetchCancel := context.WithTimeout(ctx, s.fetchTimeout)
+		fetchCtx, fetchCancel := context.WithTimeout(ctx, s.tune.Load().FetchTimeout)
 		tagHit, err := ensure(fetchCtx, lease, roots)
 		fetchCancel()
 		if err != nil {

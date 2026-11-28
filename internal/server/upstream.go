@@ -37,7 +37,7 @@ var errProbeUnusable = errors.New("upstream refs response is not usable")
 func (s *Server) discover(r *http.Request, rt route) (snapshot protocol.Snapshot, upstreamResponse *http.Response, err error) {
 	observedAt := time.Now()
 	status, responseBytes := 0, int64(0)
-	ctx, cancel := context.WithTimeout(r.Context(), s.authTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), s.tune.Load().AuthTimeout)
 	defer cancel()
 	defer func() {
 		attrs := []slog.Attr{slog.String("phase", "refs"), slog.Int("status", status), slog.Int64("response_bytes", responseBytes),

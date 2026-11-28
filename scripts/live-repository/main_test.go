@@ -65,6 +65,9 @@ func TestLiveSuiteOffline(t *testing.T) {
 	cdn := httptest.NewServer(handler)
 	defer cdn.Close()
 	binary := filepath.Join(root, "git-cdn")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := testutil.Command(ctx, filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", binary, "./cmd/git-cdn")
 	build.Dir = "../.."
 	{

@@ -21,7 +21,7 @@ func (s *Server) normalizeGitHubNotFound(r *http.Request, rt route, response *ht
 	if len(parts) != 2 {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), min(s.authTimeout, 5*time.Second))
+	ctx, cancel := context.WithTimeout(r.Context(), min(s.tune.Load().AuthTimeout, 5*time.Second))
 	defer cancel()
 	api := *s.githubAPI
 	api.Path = strings.TrimSuffix(api.Path, "/") + "/users/" + parts[0]

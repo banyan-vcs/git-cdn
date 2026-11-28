@@ -211,7 +211,7 @@ func TestAdmissionQueuesShortBurst(t *testing.T) {
 	flood := burst(12)
 	require.Positive(t, flood[200], "no request was admitted under a flood")
 	require.Positive(t, flood[503], "requests piled up beyond the waiting room")
-	require.Zero(t, s.requests.active(), "admission slots leaked")
+	require.Zero(t, s.requests.Load().active(), "admission slots leaked")
 }
 
 // A passthrough whose upstream response fails after its headers were
@@ -289,8 +289,8 @@ func TestStalledRequestBodyReleasesItsSlot(t *testing.T) {
 	defer conn.Close()
 	_, err = fmt.Fprint(conn, "POST /gitlab/Group/Repo.git/git-upload-pack HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-git-upload-pack-request\r\nGit-Protocol: version=2\r\nContent-Length: 100\r\n\r\nabcd")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return s.requests.active() == 1 }, 5*time.Second, 10*time.Millisecond, "the request did not take a slot")
-	require.Eventually(t, func() bool { return s.requests.active() == 0 }, 5*time.Second, 20*time.Millisecond, "a stalled body kept its slot")
+	require.Eventually(t, func() bool { return s.requests.Load().active() == 1 }, 5*time.Second, 10*time.Millisecond, "the request did not take a slot")
+	require.Eventually(t, func() bool { return s.requests.Load().active() == 0 }, 5*time.Second, 20*time.Millisecond, "a stalled body kept its slot")
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
 	_, err = conn.Read(make([]byte, 1))
 	require.Error(t, err, "the stalled connection stayed open")

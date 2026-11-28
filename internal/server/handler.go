@@ -18,8 +18,9 @@ import (
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	tune := s.tune.Load()
 	controller := http.NewResponseController(w)
-	output := &idleResponseWriter{ResponseWriter: w, controller: controller, timeout: s.writeIdleTimeout}
+	output := &idleResponseWriter{ResponseWriter: w, controller: controller, timeout: tune.WriteIdleTimeout}
 	w = output
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = &idleRequestBody{ReadCloser: r.Body, output: output}
@@ -27,6 +28,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
+		if s.drain.Load() {
+			// Load balancers that probe health stop routing here while the
+			// node drains; the admin endpoint answers why.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			io.WriteString(w, `{"status":"draining"}`)
+			return
+		}
 		io.WriteString(w, `{"status":"ok"}`)
 		return
 	}
@@ -96,16 +104,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeMetrics(w)
 		return
 	}
+	if s.drain.Load() {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "node is draining", http.StatusServiceUnavailable)
+		return
+	}
 	// Overload queues briefly instead of rejecting: Git never retries a 503,
 	// so a burst that exceeds the limits for a moment would fail the clone.
-	if !s.requests.acquire(r.Context()) {
+	// The limiter is captured for the release: a reload may swap it while
+	// this request runs, and releasing into a different one would corrupt
+	// its accounting.
+	limits := s.requests.Load()
+	if !limits.acquire(r.Context()) {
 		s.rejected.Add(1)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "Git request capacity exhausted", http.StatusServiceUnavailable)
 		return
 	}
-	defer s.requests.release()
-	r, finish = output.requestDeadline(r, s.requestTimeout)
+	defer limits.release()
+	r, finish = output.requestDeadline(r, tune.RequestTimeout)
 	rt, err := s.resolve(r)
 	if err != nil {
 		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "route"))
@@ -122,7 +139,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.proxy(w, r, rt, "route")
 		return
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.config.MaxRequestBytes))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, tune.MaxRequestBytes))
 	if err != nil {
 		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "request_body"))
 		http.Error(w, "request body exceeds limit or cannot be read", http.StatusRequestEntityTooLarge)
@@ -135,7 +152,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.proxy(w, r, rt, "content-encoding")
 		return
 	}
-	data, err := decodeBody(raw, r.Header.Get("Content-Encoding"), s.config.MaxRequestBytes)
+	data, err := decodeBody(raw, r.Header.Get("Content-Encoding"), tune.MaxRequestBytes)
 	if err != nil {
 		logging.Failure(r.Context(), s.logger, "repository request rejected", err, slog.String("phase", "decode_body"))
 		http.Error(w, "invalid or oversized encoded request", http.StatusBadRequest)
@@ -209,7 +226,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-GitCDN-Cache-Status", status)
-	if s.probes.ttl > 0 {
+	if s.probes.TTL() > 0 {
 		if authCached {
 			w.Header().Set("X-GitCDN-Auth-Cache", "HIT")
 		} else {

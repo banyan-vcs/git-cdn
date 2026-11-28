@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -273,6 +275,61 @@ func (s *Store) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Stats{Bytes: s.usedBytes, MaxBytes: s.maxBytes, ReservedBytes: s.reservedBytes, Entries: len(s.entries), Evictions: s.evictions, EvictedBytes: s.evictedBytes, Repacks: s.repacks, RepackFailed: s.repackFailed, RepackSkipped: s.repackSkipped, GCs: s.gcs, GCFailed: s.gcFailed, GCSkipped: s.gcSkipped, Reconciles: s.reconciles, RootsRetired: s.rootsRetired}
+}
+
+// Scope is one cached repository's share of the admin view: the scope key
+// is its directory hash, never a repository name.
+type Scope struct {
+	Scope      string    `json:"scope"`
+	Site       string    `json:"site"`
+	Bytes      int64     `json:"bytes"`
+	PackBytes  int64     `json:"pack_bytes"`
+	Packs      int       `json:"packs"`
+	Requests   int64     `json:"requests"`
+	LastAccess time.Time `json:"last_access"`
+}
+
+// Scopes snapshots every scope that holds bytes, largest first. Requests
+// counts the hourly ring like the overview does: the last day of served
+// fetches, zero for scopes idle past it.
+func (s *Store) Scopes() []Scope {
+	hour := time.Now().Unix() / 3600
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	scopes := make([]Scope, 0, len(s.entries))
+	for key, e := range s.entries {
+		if e.size <= 0 {
+			continue
+		}
+		one := Scope{Scope: key, Site: e.site, Bytes: e.size, LastAccess: e.accessed, Packs: len(e.packs)}
+		if one.Site == "" {
+			one.Site = UnknownSite
+		}
+		for _, p := range e.packs {
+			one.PackBytes += p.size
+		}
+		if hour-e.activityHour < activitySlots {
+			for _, count := range e.activity {
+				one.Requests += int64(count)
+			}
+		}
+		scopes = append(scopes, one)
+	}
+	slices.SortFunc(scopes, func(a, b Scope) int { return cmp.Compare(b.Bytes, a.Bytes) })
+	return scopes
+}
+
+// SetMaxBytes changes the admission ceiling. Shrinking it evicts
+// immediately, under the store lock, so a reload observes the new budget
+// without waiting for the next hydration to make room.
+func (s *Store) SetMaxBytes(maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("cache byte limit must be positive")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxBytes = maxBytes
+	return s.makeRoomLocked(0)
 }
 
 func digest(s string) bool {

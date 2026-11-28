@@ -29,38 +29,68 @@ type Server struct {
 	// Passthrough streams — pushes, v0/v1 fetches — hold their connection
 	// for a whole transfer; sharing one pool let a burst of them queue
 	// every probe behind it until upstream_timeout.
-	probeTransport   *http.Transport
-	client           *http.Client
-	upstreams        map[string]*url.URL
-	githubAPI        *url.URL
-	logger           *slog.Logger
-	started          time.Time
-	gitTimeout       time.Duration
-	fetchTimeout     time.Duration
-	authTimeout      time.Duration
-	writeIdleTimeout time.Duration
-	requestTimeout   time.Duration
-	requests         *requestLimiter
-	responses        *responseBudget
-	trustedProxies   []*net.IPNet
-	proxyAllow       []string
-	probes           probeCache
-	fanouts          fanoutRegistry
-	flights          flightCache
-	generations      generationFailures
-	rejected         atomic.Uint64
-	local            atomic.Uint64
-	hydrated         atomic.Uint64
-	proxied          atomic.Uint64
-	authDenied       atomic.Uint64
-	probeHits        atomic.Uint64
-	probeMerged      atomic.Uint64
-	packHits         atomic.Uint64
-	packStores       atomic.Uint64
-	fanoutSubs       atomic.Uint64
-	fanoutDetached   atomic.Uint64
-	flightWaits      atomic.Uint64
+	probeTransport *http.Transport
+	client         *http.Client
+	upstreams      map[string]*url.URL
+	githubAPI      *url.URL
+	logger         *slog.Logger
+	started        time.Time
+	// tune holds the reloadable scalars; a reload swaps the whole snapshot
+	// and every reader loads it per request, so no field races a write.
+	tune      atomic.Pointer[Tuning]
+	requests  atomic.Pointer[requestLimiter]
+	responses *responseBudget
+	// drain rejects new work on both frontends; in-flight transfers keep
+	// their grace. sshSessions counts live SSH connections when the SSH
+	// frontend registers its counter.
+	drain          atomic.Bool
+	sshSessions    func() int
+	configPath     string
+	trustedProxies []*net.IPNet
+	proxyAllow     []string
+	probes         probeCache
+	fanouts        fanoutRegistry
+	flights        flightCache
+	generations    generationFailures
+	rejected       atomic.Uint64
+	local          atomic.Uint64
+	hydrated       atomic.Uint64
+	proxied        atomic.Uint64
+	authDenied     atomic.Uint64
+	probeHits      atomic.Uint64
+	probeMerged    atomic.Uint64
+	packHits       atomic.Uint64
+	packStores     atomic.Uint64
+	fanoutSubs     atomic.Uint64
+	fanoutDetached atomic.Uint64
+	flightWaits    atomic.Uint64
 }
+
+// Tuning is the scalar set a reload may change on the running node. Both
+// frontends read it per request; everything outside it needs a restart.
+type Tuning struct {
+	MaxRequestBytes  int64
+	MaxRefsBytes     int64
+	GitTimeout       time.Duration
+	FetchTimeout     time.Duration
+	AuthTimeout      time.Duration
+	WriteIdleTimeout time.Duration
+	RequestTimeout   time.Duration
+}
+
+func newTuning(c config.Config) *Tuning {
+	t := &Tuning{MaxRequestBytes: c.MaxRequestBytes, MaxRefsBytes: c.MaxRefsBytes}
+	t.GitTimeout, _ = time.ParseDuration(c.GitTimeout)
+	t.FetchTimeout, _ = time.ParseDuration(c.FetchTimeout)
+	t.AuthTimeout, _ = time.ParseDuration(c.UpstreamTimeout)
+	t.WriteIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
+	t.RequestTimeout, _ = time.ParseDuration(c.RequestTimeout)
+	return t
+}
+
+// CurrentTuning snapshots the reloadable set for the SSH frontend, which
+// shares it with the HTTP side.
+func (s *Server) CurrentTuning() Tuning { return *s.tune.Load() }
 
 func New(c config.Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
@@ -103,14 +133,10 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		logger:         logger,
 		started:        time.Now(),
 		upstreams:      make(map[string]*url.URL),
-		requests:       newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond),
 		responses:      &responseBudget{limit: c.MaxTempResponseBytes},
 	}
-	s.gitTimeout, _ = time.ParseDuration(c.GitTimeout)
-	s.fetchTimeout, _ = time.ParseDuration(c.FetchTimeout)
-	s.authTimeout, _ = time.ParseDuration(c.UpstreamTimeout)
-	s.writeIdleTimeout, _ = time.ParseDuration(c.WriteIdleTimeout)
-	s.requestTimeout, _ = time.ParseDuration(c.RequestTimeout)
+	s.requests.Store(newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond))
+	s.tune.Store(newTuning(c))
 	s.probes.init(parseProbeTTL(c.AuthProbeCacheTTL))
 	// Every concurrent stream may hold one block and queue two more; the
 	// pool follows the configured concurrency so raising the limits does

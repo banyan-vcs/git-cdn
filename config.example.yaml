@@ -4,6 +4,7 @@ upstream:
   url: https://gitlab.com
 
 listen: 127.0.0.1:8080
+admin_listen: 127.0.0.1:8081 # Loopback operations endpoint for git-cdn status/scopes/drain/reload; "" disables
 cache_dir: ~/.git-cdn/caches
 max_cache_bytes: 21474836480 # 20 GiB, LRU across repository scopes
 repack_pack_threshold: 32

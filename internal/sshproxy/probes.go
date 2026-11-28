@@ -55,7 +55,7 @@ func (s *Server) sharedRefs(ctx context.Context, o *origin, password []byte, tim
 	// still need its result after the leader disconnects.
 	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	refs, err := o.refs(probeCtx, password, s.maxRefs)
+	refs, err := o.refs(probeCtx, password, s.backend.CurrentTuning().MaxRefsBytes)
 	flight.refs, flight.err = refs, err
 	close(flight.done)
 	c.mu.Lock()

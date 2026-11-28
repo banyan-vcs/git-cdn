@@ -9,7 +9,9 @@ All settings live in one YAML file. The default is
 
 The configuration path and `cache_dir` expand `~/` to the current user's
 home directory. Explicit relative paths resolve against the process's
-startup working directory. Changes take effect after a restart. Mixing
+startup working directory. Changes take effect after a restart, except
+for the reloadable subset the operations endpoint applies live (see
+[Operations endpoint](#operations-endpoint)). Mixing
 `upstream` and `upstreams`, unknown fields, duplicate keys and multiple
 YAML documents are rejected at startup.
 
@@ -201,6 +203,17 @@ peers cannot bypass the check by supplying this header. Non-loopback
 upstreams require HTTPS. Use `allow_insecure_http: true` only on a
 controlled internal network. Full transport requirements and migration
 notes: [http-security.md](http-security.md).
+
+## Operations endpoint
+
+`admin_listen` serves the local operations API — status, cache scopes,
+drain control and configuration reload — used by the `git-cdn` operation
+subcommands. It defaults to `127.0.0.1:8081`, an explicit empty string
+disables it, and any other value must be a loopback host:port: the
+endpoint carries no authentication yet, so the configuration refuses to
+expose it off-loopback. Remote operations go through an SSH tunnel or a
+login on the node itself. See [cli.md](cli.md) for the commands and the
+reloadable setting subset.
 
 ## Outbound proxy and private CA
 

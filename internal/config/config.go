@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,7 +92,12 @@ type Config struct {
 	UpstreamCAFile string `json:"upstream_ca_file" yaml:"upstream_ca_file"`
 	TLSCert        string `json:"tls_cert" yaml:"tls_cert"`
 	TLSKey         string `json:"tls_key" yaml:"tls_key"`
-	SSH            *SSH   `json:"ssh,omitempty" yaml:"ssh,omitempty"`
+	// AdminListen serves the local operations endpoint. A nil value takes
+	// the loopback default, an explicit empty string disables it, and any
+	// other value must be a loopback host:port — the endpoint carries no
+	// authentication yet.
+	AdminListen *string `json:"admin_listen,omitempty" yaml:"admin_listen,omitempty"`
+	SSH         *SSH    `json:"ssh,omitempty" yaml:"ssh,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -127,6 +133,21 @@ func Load(path string) (Config, error) {
 func (c *Config) Validate() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8080"
+	}
+	defaultAdmin := "127.0.0.1:8081"
+	if c.AdminListen == nil {
+		c.AdminListen = &defaultAdmin
+	} else if *c.AdminListen != "" {
+		host, port, err := net.SplitHostPort(*c.AdminListen)
+		if err != nil {
+			return fmt.Errorf("admin_listen: %w", err)
+		}
+		if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+			return fmt.Errorf("admin_listen: invalid port %q", port)
+		}
+		if !IsLoopbackHost(host) {
+			return fmt.Errorf("admin_listen must stay on loopback: the operations endpoint has no authentication yet")
+		}
 	}
 	if c.CacheDir == "" {
 		c.CacheDir = DefaultCacheDir

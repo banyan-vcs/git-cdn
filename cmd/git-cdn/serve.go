@@ -69,13 +69,37 @@ func serve(logger *slog.Logger, path string) error {
 		return err
 	}
 	defer handler.Close()
+	handler.SetConfigPath(path)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if c.AdminListen != nil && *c.AdminListen != "" {
+		// Loopback-only operations endpoint: status, scopes, drain and
+		// reload. It stops accepting with the SSH listener so a shutdown
+		// cuts all entrances at once.
+		adminServer := &http.Server{Handler: handler.AdminHandler(), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(_ net.Listener) context.Context { return ctx }}
+		adminListener, err := net.Listen("tcp", *c.AdminListen)
+		if err != nil {
+			return err
+		}
+		defer adminListener.Close()
+		go func() {
+			<-ctx.Done()
+			adminListener.Close()
+		}()
+		go func() {
+			if err := adminServer.Serve(adminListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("admin listener failed")
+				stop()
+			}
+		}()
+		logger.Info("git CDN admin listening", "address", adminListener.Addr().String())
+	}
 	if c.SSH != nil {
 		sshServer, err := sshproxy.New(c, handler, sshproxy.WithLogger(logger))
 		if err != nil {
 			return err
 		}
+		handler.SetSSHSessionCounter(sshServer.SessionCount)
 		sshListener, err := net.Listen("tcp", c.SSH.Listen)
 		if err != nil {
 			sshServer.Close()

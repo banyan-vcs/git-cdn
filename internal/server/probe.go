@@ -74,6 +74,21 @@ func (c *probeCache) init(ttl time.Duration) {
 	c.flights = make(map[string]*probeFlight)
 }
 
+// TTL reads the configured lifetime; a reload may change it, so reads
+// outside the cache lock go through here. New entries pick the new value;
+// stored ones keep the expiry they were written with.
+func (c *probeCache) TTL() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ttl
+}
+
+func (c *probeCache) setTTL(ttl time.Duration) {
+	c.mu.Lock()
+	c.ttl = ttl
+	c.mu.Unlock()
+}
+
 // parseProbeTTL maps the configured lifetime to a non-negative duration;
 // zero keeps authorization fully live.
 func parseProbeTTL(value string) time.Duration {
@@ -107,7 +122,7 @@ func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, r
 	result := "LIVE"
 	defer func() {
 		attrs := []slog.Attr{slog.String("probe_result", result), slog.Int64("duration_ms", time.Since(started).Milliseconds()),
-			slog.Int64("auth_cache_ttl_ms", s.probes.ttl.Milliseconds()), slog.Int("ref_count", len(snapshot.Refs))}
+			slog.Int64("auth_cache_ttl_ms", s.probes.TTL().Milliseconds()), slog.Int("ref_count", len(snapshot.Refs))}
 		if response != nil {
 			attrs = append(attrs, slog.Int("status", response.StatusCode))
 		}
@@ -120,7 +135,7 @@ func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, r
 	key := s.probeKey(rt, s.headers(r))
 	now := time.Now()
 	c := &s.probes
-	if c.ttl > 0 {
+	if c.TTL() > 0 {
 		c.mu.Lock()
 		entry, ok := c.entries[key]
 		if ok {
@@ -162,19 +177,19 @@ func (s *Server) probe(r *http.Request, rt route) (snapshot protocol.Snapshot, r
 	}()
 	// The shared probe must not die with the leader's connection: waiters
 	// still need its result after the leader disconnects.
-	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.authTimeout)
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.tune.Load().AuthTimeout)
 	defer cancel()
 	snapshot, response, err = s.discover(r.Clone(probeCtx), rt)
 	flight.snapshot, flight.err = snapshot, err
 	if response != nil {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, s.config.MaxRefsBytes+1))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, s.tune.Load().MaxRefsBytes+1))
 		if readErr == nil {
 			flight.response = &replayedResponse{status: response.StatusCode, header: response.Header.Clone(), body: body}
 			response.Body = io.NopCloser(bytes.NewReader(body))
 			response.ContentLength = int64(len(body))
 		}
 	}
-	if err == nil && response == nil && c.ttl > 0 {
+	if err == nil && response == nil && c.TTL() > 0 {
 		s.rememberProbe(key, snapshot)
 	}
 	return snapshot, response, false, err

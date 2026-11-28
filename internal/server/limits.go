@@ -112,6 +112,13 @@ func (l *requestLimiter) release() {
 }
 func (l *requestLimiter) active() int { return len(l.slots) }
 
+// settings reports the admission shape for reload comparisons.
+func (l *requestLimiter) settings() (concurrency, rate int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return cap(l.slots), l.rate
+}
+
 type responseBudget struct {
 	mu          sync.Mutex
 	used, limit int64
@@ -137,6 +144,21 @@ func (b *responseBudget) bytes() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.used
+}
+
+func (b *responseBudget) currentLimit() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limit
+}
+
+// setLimit changes the ceiling for future reservations. Shrinking below
+// what is already reserved rejects new responses until usage falls under
+// the ceiling again; in-flight transfers are not cut.
+func (b *responseBudget) setLimit(limit int64) {
+	b.mu.Lock()
+	b.limit = limit
+	b.mu.Unlock()
 }
 
 type responseFile struct {

@@ -41,7 +41,7 @@ func (s *Server) writeMetrics(w io.Writer) {
 	gauge("gitcdn_gc_skipped_total", stats.GCSkipped)
 	gauge("gitcdn_reconciles_total", stats.Reconciles)
 	gauge("gitcdn_roots_retired_total", stats.RootsRetired)
-	gauge("gitcdn_active_requests", s.requests.active())
+	gauge("gitcdn_active_requests", s.requests.Load().active())
 	gauge("gitcdn_rejected_requests_total", s.rejected.Load())
 	gauge("gitcdn_temp_response_bytes", s.responses.bytes())
 	gauge("gitcdn_temp_response_max_bytes", s.config.MaxTempResponseBytes)

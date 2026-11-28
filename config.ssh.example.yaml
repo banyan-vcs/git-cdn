@@ -3,6 +3,7 @@ mode: single
 upstream:
   url: https://git.example.com
 listen: 127.0.0.1:8080
+admin_listen: 127.0.0.1:8081 # Loopback operations endpoint; "" disables
 cache_dir: ~/.git-cdn/caches
 max_pack_cache_bytes: 1073741824 # 1 GiB per repository; negative disables
 
