@@ -82,22 +82,19 @@ func TestShallowFleetRetiresOldRootsAfterDrift(t *testing.T) {
 	testGit(t, f.work, "push", "--quiet", f.repo, "main", ":refs/tags/v1")
 	body := fetchBody(f.tip, "deepen 1")
 	responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
-	lastFetch := time.Now()
+	// The fetch that hydrated the drifted tip schedules the reconciliation
+	// once: a replay of it is served from the response pack cache without
+	// reaching the scope's gate, so this waits for that one background run.
 	require.Eventually(t, func() bool {
-		// A dropped trigger — the busy-gate window, or the backoff after a
-		// real timeout — is re-armed by the next fetch the fleet makes, so
-		// replay one every few seconds: the assertion measures convergence
-		// under continued traffic, not one-shot scheduler luck on a slow
-		// runner.
-		if time.Since(lastFetch) > 5*time.Second {
-			responseBody(t, postFetch(t, h.URL, "/gitlab/Group/Repo.git/git-upload-pack", body, testAuthorization, nil))
-			lastFetch = time.Now()
-		}
 		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
 		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
 	}, 60*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
 	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/retained/"), "refs/cache/retained/"+oldTip, "retired root did not enter the grace period")
-	require.GreaterOrEqual(t, metricValue(t, h, "gitcdn_roots_retired_total"), 1, "retirement was not counted")
+	// The count is taken once the ref transaction and the HEAD write after it
+	// have both ended; the refs above become visible first.
+	require.Eventually(t, func() bool {
+		return metricValue(t, h, "gitcdn_roots_retired_total") >= 1
+	}, 15*time.Second, 50*time.Millisecond, "retirement was not counted")
 }
 
 // A reconciliation preempted while Git held the reference lock can leave the

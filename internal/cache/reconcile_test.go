@@ -89,9 +89,10 @@ func TestReconcileRetiresRootsOnSnapshotDrift(t *testing.T) {
 			!strings.Contains(joined, "refs/cache/roots/"+setup.first)
 	}, 10*time.Second, 50*time.Millisecond, "snapshot drift did not retire the old root")
 	require.Contains(t, setup.cacheRefs(t), "refs/cache/retained/"+setup.first, "retired root did not enter the grace period")
-	stats := setup.store.Stats()
-	require.GreaterOrEqual(t, stats.Reconciles, uint64(1), "background reconciliation never ran")
-	require.GreaterOrEqual(t, stats.RootsRetired, uint64(1), "retirement was not counted")
+	require.Eventually(t, func() bool {
+		stats := setup.store.Stats()
+		return stats.Reconciles >= 1 && stats.RootsRetired >= 1
+	}, 10*time.Second, 20*time.Millisecond, "background reconciliation was not counted")
 
 	warm, err := setup.store.AcquireShared(ctx, setup.key)
 	require.NoError(t, err)
