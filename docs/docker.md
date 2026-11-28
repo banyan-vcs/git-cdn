@@ -31,7 +31,7 @@ cp docker/config.yaml docker/config.local.yaml
 GIT_CDN_CONFIG=./docker/config.local.yaml docker compose up -d --force-recreate --wait
 ```
 
-Keep `listen: 0.0.0.0:8080` and `cache_dir: /var/lib/git-cdn/caches` inside the container. `GIT_CDN_HTTP_PORT` changes the loopback host port. YAML changes require recreating/restarting the service. The image runs `git-cdn -config /etc/git-cdn/config.yaml`; Compose's `command` can override daemon arguments.
+Keep `listen: 0.0.0.0:8080` and `cache_dir: /var/lib/git-cdn/caches` inside the container. `GIT_CDN_HTTP_PORT` changes the loopback host port. YAML changes require recreating/restarting the service. The image runs `git-cdn serve --config /etc/git-cdn/config.yaml`; Compose's `command` can override daemon arguments.
 
 ```sh
 GIT_CDN_HTTP_PORT=18080 docker compose up -d --wait

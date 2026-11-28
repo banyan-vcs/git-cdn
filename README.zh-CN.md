@@ -58,7 +58,7 @@ pack），Linux 或 macOS：
 mkdir -p ~/.git-cdn
 cp config.example.yaml ~/.git-cdn/config.yaml
 go build -o bin/git-cdn ./cmd/git-cdn
-./bin/git-cdn                  # 监听 127.0.0.1:8080
+./bin/git-cdn serve            # 监听 127.0.0.1:8080
 ```
 
 把已有检出指向 CDN——原生 git，无需插件：

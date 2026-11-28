@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-if [ "${1:-}" = git-cdn ]; then
+if [ "${1:-}" = git-cdn ] && [ "${2:-}" = serve ]; then
   umask 077
   task_key=/var/lib/git-cdn/ssh_host_ed25519_key
   mkdir -p /var/lib/git-cdn/caches

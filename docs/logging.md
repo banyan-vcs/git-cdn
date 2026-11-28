@@ -1,6 +1,6 @@
 # Core request logging
 
-The command writes structured JSON to stderr. INFO is the default; use `-log-level DEBUG` for native Git and queue diagnostics. Embedded users supply a standard `slog.Logger`; request contexts, including application correlation IDs, remain attached to events. The core has no platform logging dependency.
+The command writes structured JSON to stderr. INFO is the default; use `--log-level DEBUG` for native Git and queue diagnostics. Embedded users supply a standard `slog.Logger`; request contexts, including application correlation IDs, remain attached to events. The core has no platform logging dependency.
 
 | Event | Level | Useful fields |
 | --- | --- | --- |

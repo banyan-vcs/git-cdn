@@ -63,7 +63,7 @@ packs) on Linux or macOS:
 mkdir -p ~/.git-cdn
 cp config.example.yaml ~/.git-cdn/config.yaml
 go build -o bin/git-cdn ./cmd/git-cdn
-./bin/git-cdn                  # listens on 127.0.0.1:8080
+./bin/git-cdn serve            # listens on 127.0.0.1:8080
 ```
 
 Point existing checkouts at the CDN — plain git, no plugins:
@@ -109,7 +109,7 @@ Mode inference, credential hosts and URL normalization:
 | [docs/protocol-probes.md](docs/protocol-probes.md) | Local Git checks behind the design |
 | [docs/testing.md](docs/testing.md) | CI matrix, live validation, measurement rules |
 
-Structured core logs trace repository access, live refs, upstream fallback, object hydration/reuse and pack preparation. Use `-log-level DEBUG` for native Git commands and lease/process queue times. Errors retain stages, system errors and exit codes without logging credentials, packet bodies or command arguments. See [Core request logging](docs/logging.md) for events and fields. A Grafana dashboard for `/metrics` is kept in [dashboards/git-cdn.json](dashboards/git-cdn.json); see [Health and metrics](docs/configuration.md#health-and-metrics) for importing it.
+Structured core logs trace repository access, live refs, upstream fallback, object hydration/reuse and pack preparation. Use `--log-level DEBUG` for native Git commands and lease/process queue times. Errors retain stages, system errors and exit codes without logging credentials, packet bodies or command arguments. See [Core request logging](docs/logging.md) for events and fields. A Grafana dashboard for `/metrics` is kept in [dashboards/git-cdn.json](dashboards/git-cdn.json); see [Health and metrics](docs/configuration.md#health-and-metrics) for importing it.
 
 ## Validation
 

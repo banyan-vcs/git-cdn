@@ -1,110 +1,27 @@
+// Command git-cdn is the Git caching CDN daemon and its node operations
+// CLI. The daemon runs under the serve subcommand; the operation
+// subcommands talk to a running node's admin endpoint.
 package main
 
 import (
-	"context"
-	"errors"
-	"flag"
-	"log/slog"
-	"net"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
-	"gitlab.com/banyan-vcs/git-cdn/internal/config"
-	"gitlab.com/banyan-vcs/git-cdn/internal/server"
-	"gitlab.com/banyan-vcs/git-cdn/internal/sshproxy"
+	"github.com/spf13/cobra"
 )
 
 func main() {
-	level := slog.LevelInfo
-	flag.TextVar(&level, "log-level", slog.LevelInfo, "Log level: DEBUG, INFO, WARN or ERROR")
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: &level}))
-	if err := run(logger); err != nil {
-		logger.Error("git CDN failed", "error", err)
+	if err := newRootCommand().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-// shutdownGrace bounds how long in-flight work may finish after a stop
-// signal. HTTP responses and SSH sessions get the same window.
-const shutdownGrace = 15 * time.Second
-
-func run(logger *slog.Logger) error {
-	path := flag.String("config", config.DefaultConfigPath, "Path to the YAML configuration")
-	flag.Parse()
-	c, err := config.Load(*path)
-	if err != nil {
-		return err
+func newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "git-cdn",
+		Short: "Git caching CDN daemon and node operations",
+		SilenceUsage: true,
 	}
-	handler, err := server.New(c, logger)
-	if err != nil {
-		return err
-	}
-	defer handler.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if c.SSH != nil {
-		sshServer, err := sshproxy.New(c, handler, sshproxy.WithLogger(logger))
-		if err != nil {
-			return err
-		}
-		sshListener, err := net.Listen("tcp", c.SSH.Listen)
-		if err != nil {
-			sshServer.Close()
-			return err
-		}
-		defer sshServer.Close()
-		defer sshListener.Close()
-		go func() {
-			<-ctx.Done()
-			// Stop accepting first, then give running clones the same
-			// grace the HTTP server gets before they are cut off.
-			sshListener.Close()
-			sshServer.Drain(shutdownGrace)
-		}()
-		go func() {
-			if err := sshServer.Serve(sshListener); err != nil && !errors.Is(err, net.ErrClosed) {
-				logger.Error("SSH listener failed")
-				stop()
-			}
-		}()
-		logger.Info("git CDN SSH listening", "address", sshListener.Addr().String())
-	}
-	// No absolute ReadTimeout: it bounded the whole request including a
-	// push body, so an upload that took longer than it was cut off while
-	// still making progress. Headers keep their own deadline, and the
-	// handler bounds each request-body read by the idle timeout instead.
-	httpServer := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, BaseContext: func(_ net.Listener) context.Context { return ctx }}
-	listener, err := net.Listen("tcp", c.Listen)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	shutdownDone := make(chan struct{})
-	go func() {
-		defer close(shutdownDone)
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), shutdownGrace)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdown); err != nil {
-			httpServer.Close()
-		}
-	}()
-	logger.Info("git CDN listening", "address", listener.Addr().String(), "mode", c.Mode, "tls", c.TLSCert != "")
-	if c.TLSCert != "" {
-		err = httpServer.ServeTLS(listener, c.TLSCert, c.TLSKey)
-	} else {
-		err = httpServer.Serve(listener)
-	}
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		stop()
-	}
-	stop()
-	<-shutdownDone
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
+	root.AddCommand(newServeCommand())
+	root.AddCommand(newVersionCommand())
+	return root
 }

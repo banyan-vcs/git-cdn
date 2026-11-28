@@ -401,7 +401,7 @@ func (s *suite) dedicatedServer(name, origin string) (base string, stop func()) 
 	log, err := os.Create(logPath)
 	must(err)
 	ctx, cancel := context.WithCancel(s.ctx)
-	cmd := testutil.Command(ctx, s.args.binary, "-config", configPath)
+	cmd := testutil.Command(ctx, s.args.binary, "serve", "--config", configPath)
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
 		cancel()

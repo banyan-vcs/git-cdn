@@ -4,7 +4,7 @@ All settings live in one YAML file. The default is
 `~/.git-cdn/config.yaml`; override it with a command-line argument:
 
 ```sh
-./bin/git-cdn -config ./config.yaml
+./bin/git-cdn serve --config ./config.yaml
 ```
 
 The configuration path and `cache_dir` expand `~/` to the current user's

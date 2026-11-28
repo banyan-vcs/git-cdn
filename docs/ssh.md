@@ -23,7 +23,7 @@ By default, `ssh.upstream.host_key_policy: strict` requires verified origin keys
 
 ```sh
 go build -o bin/git-cdn ./cmd/git-cdn
-./bin/git-cdn -config config.ssh.example.yaml
+./bin/git-cdn serve --config config.ssh.example.yaml
 ```
 
 HTTP and SSH run together. `ssh.listen` defaults to loopback port 2222, `ssh.max_connections` to 16, and `ssh.allowed_users` to `[git]`. Upstream `user` overrides the incoming SSH username; omitting it forwards an allowed incoming username. Each connection accepts at most four session channels. A 15-second handshake bound, the request deadline and the configured write idle timeout bound transport use.

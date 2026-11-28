@@ -12,13 +12,16 @@ ARG RUNTIME_IMAGE=alpine:3.23
 
 FROM ${GO_IMAGE} AS build
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG VERSION=dev
 ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/git-cdn ./cmd/git-cdn
+RUN CGO_ENABLED=0 go build -trimpath \
+  -ldflags="-s -w -X gitlab.com/banyan-vcs/git-cdn/internal/buildinfo.Version=${VERSION}" \
+  -o /out/git-cdn ./cmd/git-cdn
 
 FROM ${RUNTIME_IMAGE}
 RUN apk add --no-cache ca-certificates git openssh-client openssh-keygen \
@@ -39,4 +42,4 @@ EXPOSE 8080 2222
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["git-cdn", "-config", "/etc/git-cdn/config.yaml"]
+CMD ["git-cdn", "serve", "--config", "/etc/git-cdn/config.yaml"]
