@@ -14,6 +14,7 @@
   --mark: #a16207;
   --ctl: #a16207;
   --sel: rgba(252, 216, 84, 0.45);
+  --fig-accent: #a16207;
   --code-bg: #111113;
   --code-ink: #e7e5e4;
   --code-cmt: #78716c;
@@ -40,6 +41,7 @@
     --mark: #a1a1aa;
     --ctl: #fcd854;
     --sel: rgba(252, 216, 84, 0.22);
+    --fig-accent: #fcd854;
     --code-bg: #0a0a0b;
     --code-ink: #d4d4d8;
     --code-cmt: #71717a;
@@ -63,6 +65,7 @@ html[data-theme="light"] {
   --mark: #a16207;
   --ctl: #a16207;
   --sel: rgba(252, 216, 84, 0.45);
+  --fig-accent: #a16207;
   --code-bg: #111113;
   --code-ink: #e7e5e4;
   --code-cmt: #78716c;
@@ -85,6 +88,7 @@ html[data-theme="dark"] {
   --mark: #a1a1aa;
   --ctl: #fcd854;
   --sel: rgba(252, 216, 84, 0.22);
+  --fig-accent: #fcd854;
   --code-bg: #0a0a0b;
   --code-ink: #d4d4d8;
   --code-cmt: #71717a;
@@ -506,8 +510,11 @@ pre code {
 figure.arch {
   margin: 0;
 }
-figure.arch img {
+figure.arch img,
+figure.arch svg {
+  display: block;
   width: 100%;
+  height: auto;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--card);

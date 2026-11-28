@@ -61,6 +61,7 @@
   --mark: @l-mark;
   --ctl: @l-ctl;
   --sel: @l-sel;
+  --fig-accent: @l-mark;
   --code-bg: #111113;
   --code-ink: #e7e5e4;
   --code-cmt: #78716c;
@@ -84,6 +85,7 @@
   --mark: @d-mark;
   --ctl: @d-ctl;
   --sel: @d-sel;
+  --fig-accent: @d-ctl;
   --code-bg: #0a0a0b;
   --code-ink: #d4d4d8;
   --code-cmt: #71717a;
@@ -370,8 +372,11 @@ pre code { background: none; color: inherit; padding: 0; }
 /* ---------- architecture figure ---------- */
 
 figure.arch { margin: 0; }
-figure.arch img {
+figure.arch img,
+figure.arch svg {
+  display: block;
   width: 100%;
+  height: auto;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--card);

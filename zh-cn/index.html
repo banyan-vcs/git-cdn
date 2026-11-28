@@ -63,7 +63,7 @@
            aria-label="git 客户端经由 git-cdn 拉取，git-cdn 缓存对象，并为鉴权、补齐与透传联系原站">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/>
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--fig-accent)"/>
           </marker>
         </defs>
         <g font-family="ui-monospace, Consolas, monospace">
@@ -76,14 +76,14 @@
             <text x="66" y="178" text-anchor="middle" font-size="11" fill="var(--ink-soft)">客户端 · v2 / SSH</text>
           </g>
           <!-- clients -> cdn -->
-          <line x1="122" y1="109" x2="148" y2="109" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arr)"/>
+          <line x1="122" y1="109" x2="148" y2="109" stroke="var(--fig-accent)" stroke-width="2.5" marker-end="url(#arr)"/>
           <!-- cdn -->
           <g>
-            <rect x="152" y="52" width="116" height="158" rx="12" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
-            <text x="210" y="74" text-anchor="middle" font-size="13" font-weight="600" fill="var(--accent-ink)">git-cdn</text>
-            <rect x="166" y="92" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.9"/>
-            <rect x="166" y="111" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.55"/>
-            <rect x="166" y="130" width="76" height="13" rx="3" fill="var(--accent)" opacity="0.3"/>
+            <rect x="152" y="52" width="116" height="158" rx="12" fill="var(--accent-soft)" stroke="var(--fig-accent)" stroke-width="1.5"/>
+            <text x="210" y="74" text-anchor="middle" font-size="13" font-weight="600" fill="var(--fig-accent)">git-cdn</text>
+            <rect x="166" y="92" width="76" height="13" rx="3" fill="var(--fig-accent)" opacity="0.9"/>
+            <rect x="166" y="111" width="76" height="13" rx="3" fill="var(--fig-accent)" opacity="0.55"/>
+            <rect x="166" y="130" width="76" height="13" rx="3" fill="var(--fig-accent)" opacity="0.3"/>
             <text x="210" y="163" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">对象缓存</text>
             <text x="210" y="177" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">LRU · repack · GC</text>
             <!-- cache status chips -->
@@ -97,7 +97,7 @@
             </g>
           </g>
           <!-- cdn -> origin: authorize, hydrate, passthrough (see caption) -->
-          <line x1="272" y1="104" x2="288" y2="104" stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+          <line x1="272" y1="104" x2="288" y2="104" stroke="var(--fig-accent)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
           <!-- origin -->
           <g>
             <rect x="292" y="64" width="78" height="80" rx="10" fill="var(--card)" stroke="var(--line)"/>
@@ -337,7 +337,118 @@ go build -o bin/git-cdn ./cmd/git-cdn
       discovery、push、want-ref、SHA-256、v0/v1、LFS——原样转发给原站。</p>
     </div>
     <figure class="arch">
-      <img src="../assets/architecture.zh.svg" alt="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch（含 shallow 与 filter）送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、want-ref、SHA-256、v0/v1 与 LFS 请求透传给原站" loading="lazy">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" font-family="system-ui, 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif" role="img" aria-label="git-cdn 架构：git 与 SSH 客户端接入 HTTP v2 前端或 SSH 密码代理；路由与准入策略把可缓存的 v2 fetch（含 shallow 与 filter）送入鉴权、校验、精确 OID 补齐和本地 upload-pack，底层是带 LRU、geometric repack 和 cruft GC 的持久对象缓存；push、want-ref、SHA-256、v0/v1 与 LFS 请求透传给原站">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-soft)"/>
+          </marker>
+          <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="var(--ink)"/>
+          </marker>
+        </defs>
+      
+        <rect x="0" y="0" width="960" height="430" fill="var(--card)"/>
+      
+        <!-- clients -->
+        <g text-anchor="middle">
+          <text x="109" y="52" font-size="11" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace" letter-spacing="2">客户端</text>
+          <rect x="24" y="64" width="170" height="40" rx="9" fill="var(--card)" stroke="var(--line)"/>
+          <text x="109" y="82" font-size="12.5" font-weight="600" fill="var(--ink)">git CLI</text>
+          <text x="109" y="97" font-size="10.5" fill="var(--ink-soft)">smart HTTP v2</text>
+          <rect x="24" y="116" width="170" height="40" rx="9" fill="var(--card)" stroke="var(--line)"/>
+          <text x="109" y="134" font-size="12.5" font-weight="600" fill="var(--ink)">CI / 构建代理</text>
+          <text x="109" y="149" font-size="10.5" fill="var(--ink-soft)">标准 git over HTTPS</text>
+          <rect x="24" y="168" width="170" height="40" rx="9" fill="var(--card)" stroke="var(--line)"/>
+          <text x="109" y="186" font-size="12.5" font-weight="600" fill="var(--ink)">SSH 客户端</text>
+          <text x="109" y="201" font-size="10.5" fill="var(--ink-soft)">密码 / token</text>
+        </g>
+      
+        <!-- requests / responses -->
+        <g font-size="10" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace" text-anchor="middle">
+          <line x1="198" y1="106" x2="232" y2="106" stroke="var(--ink-soft)" stroke-width="2.5" marker-end="url(#a)"/>
+          <text x="215" y="98">请求</text>
+          <line x1="232" y1="140" x2="198" y2="140" stroke="var(--ink)" stroke-width="2.5" marker-end="url(#g)"/>
+          <text x="217" y="158" fill="var(--ink)">packs</text>
+        </g>
+      
+        <!-- git-cdn container -->
+        <rect x="240" y="40" width="450" height="360" rx="14" fill="var(--bg-soft)" stroke="var(--ink-soft)" stroke-width="1.5"/>
+        <text x="465" y="66" text-anchor="middle" font-size="15" font-weight="700" fill="var(--ink)">git-cdn</text>
+      
+        <!-- frontends -->
+        <g text-anchor="middle">
+          <rect x="258" y="78" width="200" height="42" rx="9" fill="var(--card)" stroke="var(--ink-soft)"/>
+          <text x="358" y="96" font-size="12" font-weight="600" fill="var(--ink)">HTTP v2 前端</text>
+          <text x="358" y="111" font-size="10" fill="var(--ink-soft)">路由 · 限额 · 凭据</text>
+          <rect x="472" y="78" width="200" height="42" rx="9" fill="var(--card)" stroke="var(--ink-soft)"/>
+          <text x="572" y="96" font-size="12" font-weight="600" fill="var(--ink)">SSH 密码代理</text>
+          <text x="572" y="111" font-size="10" fill="var(--ink-soft)">终止 SSH · 严格 host key</text>
+        </g>
+      
+        <g stroke="var(--ink-soft)" stroke-width="1.8">
+          <line x1="358" y1="120" x2="358" y2="130" marker-end="url(#a)"/>
+          <line x1="572" y1="120" x2="572" y2="130" marker-end="url(#a)"/>
+        </g>
+      
+        <!-- eligibility policy -->
+        <rect x="258" y="134" width="414" height="32" rx="8" fill="var(--fig-accent)"/>
+        <text x="465" y="155" text-anchor="middle" font-size="12" font-weight="600" fill="var(--on-accent)">路由 · fetch 准入策略</text>
+      
+        <g stroke="var(--ink-soft)" stroke-width="1.8">
+          <line x1="358" y1="166" x2="358" y2="178" marker-end="url(#a)"/>
+          <line x1="572" y1="166" x2="572" y2="178" marker-end="url(#a)"/>
+        </g>
+      
+        <!-- lane A: local fetch path -->
+        <rect x="258" y="182" width="200" height="118" rx="9" fill="var(--card)" stroke="var(--ink-soft)"/>
+        <text x="272" y="202" font-size="12" font-weight="600" fill="var(--ink-soft)">本地 fetch 路径</text>
+        <g font-size="10.5" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">
+          <text x="272" y="222">鉴权 — 实时 ls-refs</text>
+          <text x="272" y="240">校验 — 依赖图完整</text>
+          <text x="272" y="258">补齐 — 精确 OID</text>
+          <text x="272" y="276">upload-pack · 暂存</text>
+        </g>
+        <text x="272" y="293" font-size="9.5" fill="var(--flow)" font-family="ui-monospace, Consolas, monospace">每次请求各自的凭据</text>
+      
+        <!-- lane B: passthrough -->
+        <rect x="472" y="182" width="200" height="118" rx="9" fill="var(--card)" stroke="var(--line)"/>
+        <text x="486" y="202" font-size="12" font-weight="600" fill="var(--ink-soft)">透传</text>
+        <g font-size="10.5" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">
+          <text x="486" y="222">discovery · ls-refs</text>
+          <text x="486" y="240">push（receive-pack）</text>
+          <text x="486" y="258">want-ref · SHA-256 · v0/v1</text>
+          <text x="486" y="276">Git LFS 端点</text>
+        </g>
+        <text x="486" y="293" font-size="9.5" fill="var(--flow)" font-family="ui-monospace, Consolas, monospace">原样转发，不缓存</text>
+      
+        <!-- object cache -->
+        <line x1="358" y1="300" x2="358" y2="314" stroke="var(--ink-soft)" stroke-width="1.8" marker-end="url(#a)"/>
+        <rect x="258" y="318" width="414" height="64" rx="9" fill="var(--card)" stroke="var(--ink-soft)"/>
+        <text x="272" y="338" font-size="12" font-weight="600" fill="var(--fig-accent)">持久对象缓存</text>
+        <text x="272" y="356" font-size="10.5" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">repos/&lt;hash&gt;/repo.git — staging → 校验 → 发布</text>
+        <text x="272" y="372" font-size="10.5" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">LRU 预算 · geometric repack · cruft GC（14 天）· reftable</text>
+      
+        <!-- origin -->
+        <rect x="740" y="88" width="196" height="210" rx="12" fill="var(--card)" stroke="var(--line)"/>
+        <text x="838" y="114" text-anchor="middle" font-size="14" font-weight="700" fill="var(--ink)">原站</text>
+        <text x="838" y="132" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">GitHub · GitLab · 自建</text>
+        <g font-size="10.5" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">
+          <text x="756" y="158">实时鉴权</text>
+          <text x="756" y="174">（逐请求）</text>
+          <text x="756" y="198">精确 OID 补齐</text>
+          <text x="756" y="222">写入 · LFS 数据</text>
+          <text x="756" y="246">refs 与可见性的</text>
+          <text x="756" y="262">唯一权威来源</text>
+        </g>
+      
+        <!-- container -> origin arrows -->
+        <g font-size="10" fill="var(--ink-soft)" font-family="ui-monospace, Consolas, monospace">
+          <line x1="690" y1="212" x2="734" y2="164" stroke="var(--ink-soft)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/>
+          <text transform="translate(700 199) rotate(-47)">鉴权 · 补齐</text>
+          <line x1="690" y1="252" x2="734" y2="220" stroke="var(--ink-soft)" stroke-width="2" marker-end="url(#a)"/>
+          <text transform="translate(694 248) rotate(-36)">原样转发</text>
+        </g>
+      </svg>
       <figcaption>完整的分层说明——鉴权边界、对象存储与补齐、容量与并发、
       响应交付——见
       <a href="https://github.com/banyan-vcs/git-cdn/blob/main/docs/design.md">docs/design.md</a>。</figcaption>
