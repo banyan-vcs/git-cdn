@@ -301,7 +301,8 @@ git clone http://127.0.0.1:8080/github/git/git.git
 
 <span class="c"># 第一次 clone 补齐缓存并在本地服务（MISS），
 # 之后都是 HIT；每个 fetch 响应都带：</span>
-<span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># 之后是 HIT</span></code></pre>
+X-GitCDN-Cache-Status: <span class="m">MISS</span>
+X-GitCDN-Cache-Status: <span class="h">HIT</span></code></pre>
       </div>
       <div>
         <h3>已有检出</h3>

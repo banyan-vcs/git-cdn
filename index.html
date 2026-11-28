@@ -336,7 +336,8 @@ git clone http://127.0.0.1:8080/github/git/git.git
 <span class="c"># the first clone hydrates the cache and is served locally
 # (MISS), the next ones are HIT; every fetch response
 # carries:</span>
-<span class="h">X-GitCDN-Cache-Status:</span> <span class="m">MISS</span>  <span class="c"># then HIT</span></code></pre>
+X-GitCDN-Cache-Status: <span class="m">MISS</span>
+X-GitCDN-Cache-Status: <span class="h">HIT</span></code></pre>
       </div>
       <div>
         <h3>Existing checkouts</h3>

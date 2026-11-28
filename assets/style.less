@@ -354,8 +354,10 @@ pre {
 }
 pre .c { color: var(--code-cmt); }
 /* the code block is dark in both schemes, so its highlights are fixed
-   light grays — not the badges' theme-aware hit/flow tokens */
-pre .h { color: #fde17b; font-weight: 600; } /* header names / HIT — the yellow */
+   light grays — not the badges' theme-aware hit/flow tokens. The yellow
+   marks the outcome value, never the header name: HIT is what the
+   reader scans for, MISS stays mid-gray and recedes */
+pre .h { color: #fde17b; font-weight: 600; } /* cache HIT — the yellow */
 pre .m { color: #a1a1aa; }                    /* MISS */
 code {
   font: 0.92em ui-monospace, "Cascadia Code", Consolas, monospace;
