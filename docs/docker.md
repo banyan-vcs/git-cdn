@@ -75,6 +75,15 @@ docker compose exec -T git-cdn git --version
 docker compose down
 ```
 
+The operations subcommands work inside the container over the loopback admin endpoint — status, cached scopes, drain before a restart, and live reload of the YAML subset:
+
+```sh
+docker compose exec -T git-cdn git-cdn status
+docker compose exec -T git-cdn git-cdn drain --wait
+```
+
+See [cli.md](cli.md) for the full set.
+
 `docker compose down -v` deletes cache and SSH identity; use it only for an intentional reset. Clients then need to trust the replacement host key. Multiple replicas cannot use the same cache volume because it has an exclusive process lock. Bind-mounted state requires permissions for UID/GID 10001.
 
 Health is checked at `/healthz`. The root filesystem is read-only, `/tmp` is tmpfs, and the init/exec entrypoint forwards shutdown signals. Local config and credential files are excluded from the build context.

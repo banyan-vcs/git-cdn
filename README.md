@@ -72,6 +72,10 @@ Point existing checkouts at the CDN — plain git, no plugins:
 git config --global url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 ```
 
+Operate the running node with the same binary: `git-cdn status`,
+`scopes`, `drain --wait` and `reload` drive the loopback admin endpoint
+([docs/cli.md](docs/cli.md)).
+
 Credentials are provided for the **CDN domain** and forwarded to the
 origin on every fetch ([client credentials](docs/configuration.md#client-credentials)).
 The rewrite also affects push, which the CDN forwards to the upstream.
@@ -106,6 +110,7 @@ Mode inference, credential hosts and URL normalization:
 | [docs/ssh.md](docs/ssh.md) | SSH password proxy and Git LFS passthrough |
 | [docs/http-security.md](docs/http-security.md) | Admission limits, response spools, multi-upstream credential binding |
 | [docs/docker.md](docs/docker.md) | Compose quickstart, optional SSH, state management |
+| [docs/cli.md](docs/cli.md) | The `git-cdn` subcommands: serve, status, scopes, drain, reload |
 | [docs/protocol-probes.md](docs/protocol-probes.md) | Local Git checks behind the design |
 | [docs/testing.md](docs/testing.md) | CI matrix, live validation, measurement rules |
 
@@ -119,7 +124,7 @@ go test -race ./...
 go vet ./...
 ```
 
-224 test functions across 47 files plus a fuzz target; CI runs
+240 test functions across 51 files plus a fuzz target; CI runs
 `go test -race` on Linux and macOS against an authenticated
 `git http-backend` with standard Git clients ([docs/testing.md](docs/testing.md)).
 

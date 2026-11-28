@@ -17,11 +17,16 @@ func main() {
 
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "git-cdn",
-		Short: "Git caching CDN daemon and node operations",
+		Use:          "git-cdn",
+		Short:        "Git caching CDN daemon and node operations",
 		SilenceUsage: true,
 	}
 	root.AddCommand(newServeCommand())
+	root.AddCommand(newStatusCommand())
+	root.AddCommand(newScopesCommand())
+	root.AddCommand(newDrainCommand())
+	root.AddCommand(newUndrainCommand())
+	root.AddCommand(newReloadCommand())
 	root.AddCommand(newVersionCommand())
 	return root
 }

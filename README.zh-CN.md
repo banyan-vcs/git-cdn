@@ -67,6 +67,9 @@ go build -o bin/git-cdn ./cmd/git-cdn
 git config --global url."https://git-cdn.example/".insteadOf "https://gitlab.com/"
 ```
 
+运维也用同一个二进制：`git-cdn status`、`scopes`、`drain --wait` 和
+`reload` 走回环管理端点（[docs/cli.md](docs/cli.md)）。
+
 凭据提供给 **CDN 的域名**，每次 fetch 由 CDN 转发给原站
 （[客户端凭据](docs/configuration.md#client-credentials)）。改写同时影响
 push，CDN 会把 push 透传给上游。
@@ -100,6 +103,7 @@ https://git-cdn-github.example/github/owner/repo.git   → https://github.com/ow
 | [docs/ssh.md](docs/ssh.md) | SSH 密码代理与 Git LFS 透传 |
 | [docs/http-security.md](docs/http-security.md) | 准入限制、响应暂存、多上游凭据绑定 |
 | [docs/docker.md](docs/docker.md) | Compose 快速启动、可选 SSH、数据管理 |
+| [docs/cli.md](docs/cli.md) | `git-cdn` 子命令：serve、status、scopes、drain、reload |
 | [docs/protocol-probes.md](docs/protocol-probes.md) | 设计依据的本地 Git 验证 |
 | [docs/testing.md](docs/testing.md) | CI 矩阵、真实仓库验证、测量规则 |
 
@@ -113,7 +117,7 @@ go test -race ./...
 go vet ./...
 ```
 
-47 个文件中的 224 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
+51 个文件中的 240 个测试函数和 1 个 fuzz 入口；CI 在 Linux 和 macOS 上用
 标准 Git 客户端驱动带认证的 `git http-backend` 运行 `go test -race`
 （[docs/testing.md](docs/testing.md)）。
 
