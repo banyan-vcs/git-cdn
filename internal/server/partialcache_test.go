@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/banyan-vcs/git-cdn/internal/cache"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,6 +127,57 @@ func TestShallowFleetRetiresOldRootsAfterAKilledRefWriter(t *testing.T) {
 		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
 		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
 	}, 15*time.Second, 100*time.Millisecond, "snapshot drift did not retire the old root")
+}
+
+// A fleet that keeps cloning one tip is served from the response pack cache
+// after the first request, and those hits never take the scope's gate. A
+// reconciliation is dropped when its scope does not go idle in time — a
+// pin holds this one — and the next hit arms it again; it used to wait for
+// the next request that took the gate.
+func TestWarmHitsRearmADroppedReconciliation(t *testing.T) {
+	f := newFixture(t)
+	s, h := newCDN(t, f, nil)
+	previous := cache.ReconcileIdleWait
+	cache.ReconcileIdleWait = 500 * time.Millisecond
+	t.Cleanup(func() { cache.ReconcileIdleWait = previous })
+	path := "/gitlab/Group/Repo.git/git-upload-pack"
+	responseBody(t, postFetch(t, h.URL, path, fetchBody(f.tip, "deepen 1"), testAuthorization, nil))
+	repos, err := filepath.Glob(filepath.Join(s.store.Root, "repos", "*", "repo.git"))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, len(repos))
+	key := filepath.Base(filepath.Dir(repos[0]))
+	require.Eventually(t, func() bool {
+		return metricValue(t, h, "gitcdn_reconciles_total") >= 1
+	}, 15*time.Second, 50*time.Millisecond, "shallow traffic never reconciled")
+	oldTip := f.tip
+	f.commit(t, "drift")
+	testGit(t, f.work, "push", "--quiet", f.repo, "main", ":refs/tags/v1")
+	body := fetchBody(f.tip, "deepen 1")
+
+	unpin := s.store.Pin(key)
+	require.NotNil(t, unpin)
+	drifted := postFetch(t, h.URL, path, body, testAuthorization, nil)
+	responseBody(t, drifted)
+	require.EqualValues(t, "MISS", drifted.Header.Get("X-GitCDN-Cache-Status"), "the drifted tip was not hydrated locally")
+	// The pin keeps the scope busy past the wait, so the reconciliation the
+	// fetch armed is dropped and the old root stays.
+	time.Sleep(3 * cache.ReconcileIdleWait)
+	require.EqualValues(t, 1, metricValue(t, h, "gitcdn_reconciles_total"), "the scope reconciled while it was pinned")
+	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/roots/"), "refs/cache/roots/"+oldTip)
+	unpin()
+
+	fetches := f.fetches.Load()
+	for range 3 {
+		replay := postFetch(t, h.URL, path, body, testAuthorization, nil)
+		responseBody(t, replay)
+		require.EqualValues(t, "HIT", replay.Header.Get("X-GitCDN-Pack-Cache"), "the replay was not a pack-cache hit")
+	}
+	require.Equal(t, fetches, f.fetches.Load(), "a replay reached the origin")
+	require.Eventually(t, func() bool {
+		joined := testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/")
+		return strings.Contains(joined, "refs/cache/roots/"+f.tip) && !strings.Contains(joined, "refs/cache/roots/"+oldTip)
+	}, 15*time.Second, 50*time.Millisecond, "warm hits did not rearm the dropped reconciliation")
+	require.Contains(t, testGit(t, repos[0], "for-each-ref", "--format=%(refname)", "refs/cache/retained/"), "refs/cache/retained/"+oldTip)
 }
 
 // A batch of concurrent shallow fetches on a warm scope collapses into one

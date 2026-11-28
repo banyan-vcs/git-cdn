@@ -252,11 +252,76 @@ limit, pending reservation bytes, entry count, evictions and evicted bytes.
 Metrics also report active requests, admission rejections and temporary
 response bytes. Logs omit authentication headers and upstream Git stderr.
 
+The repositories are described in aggregate, so that no sample names one.
+`gitcdn_repositories` counts the scopes that hold cache bytes, and these are
+what the other figures describe:
+
+- `gitcdn_repository_idle_bucket` and `gitcdn_repository_idle_bucket_bytes`
+  count, per `min_idle_seconds`, the repositories last served at least that
+  long ago and the bytes they hold; the oldest are in every bucket.
+- `gitcdn_repository_size_bucket` and `gitcdn_repository_size_bucket_bytes`
+  count, per `min_bytes`, the repositories of at least that size.
+- `gitcdn_repository_bytes_largest` and `gitcdn_repository_bytes_quantile`
+  (nearest-rank `0.5` and `0.9`) summarize the sizes.
+- `gitcdn_active_repositories{window}` counts the repositories served within
+  the window, and `gitcdn_request_top10_share` is the share of the last
+  day's requests that went to the ten most requested ones. It is a ratio
+  between 0 and 1, the only sample that is not an integer. The day is counted
+  in memory, so right after a restart it holds the requests since.
+- `gitcdn_site_repositories`, `gitcdn_site_bytes` and
+  `gitcdn_site_requests_total` split the repositories by site: the upstream
+  alias of a multi-site configuration, `default` in single-site mode, and
+  `unknown` for repositories cached before sites were recorded and not
+  served since. Requests are fetches served from the cache since the process
+  started.
+- `gitcdn_hydration_backoff_repositories` and
+  `gitcdn_maintenance_backoff_repositories` count the repositories whose
+  last hydration, GC, repack or reconciliation failed and whose retry is
+  still waiting.
+- `gitcdn_pack_cache_bytes` is held by response-pack entries,
+  `gitcdn_disk_free_bytes` is the free space on the cache volume, and
+  `gitcdn_process_start_time_seconds` is when the process started.
+
+These are counted when `/metrics` is scraped, so they are as fresh as the
+scrape. On a busy node the count holds the store lock for the pass over the
+scopes.
+
+`/healthz` answers any client. `/metrics` follows the transport rule of the
+Git endpoints: it needs TLS, a loopback peer, or a proxy in
+`trusted_proxy_cidrs` that set `X-Forwarded-Proto: https`; anything else
+gets 403. Prometheus does not add such a header on its own, so it talks to
+the service itself — from loopback or over TLS — or to the TLS proxy in
+front of it:
+
+```yaml
+scrape_configs:
+  # Prometheus on the same host: loopback needs no TLS.
+  - job_name: git-cdn
+    static_configs:
+      - targets: ["127.0.0.1:8080"]
+
+  # A listener with tls_cert and tls_key: scrape over HTTPS, trusting the
+  # certificate's CA (insecure_skip_verify instead for a self-signed one).
+  - job_name: git-cdn-tls
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/git-cdn-ca.pem
+    static_configs:
+      - targets: ["cdn.example.com:8443"]
+
+  # Behind a TLS reverse proxy: scrape the proxy's HTTPS address. The proxy
+  # forwards X-Forwarded-Proto: https from an address in trusted_proxy_cidrs,
+  # on the same route as the Git traffic.
+  - job_name: git-cdn-proxy
+    scheme: https
+    static_configs:
+      - targets: ["cdn.example.com:443"]
+```
+
 A Grafana dashboard for these metrics lives at
 [dashboards/git-cdn.json](../dashboards/git-cdn.json). Import it under
 Dashboards → New → Import and pick the Prometheus that scrapes the proxy;
-every query filters by the `job` and `instance` variables. The Repositories
-row and the panels carrying an information note stay empty until the process
-exports the aggregate metrics they query — the dashboard description lists
-which. To change the dashboard, edit it in Grafana, export the JSON and
-replace the file; CI lints it with `dashboard-linter`.
+every query filters by the `job` and `instance` variables. The Nodes panels
+assume a scrape interval of 30 seconds or less. To change the dashboard,
+edit it in Grafana, export the JSON and replace the file; CI lints it with
+`dashboard-linter`.

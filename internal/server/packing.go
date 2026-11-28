@@ -54,21 +54,30 @@ func (s *Server) SharedScopeIdentity(repo string) (string, bool) {
 	return scopeIdentity(base, repo), true
 }
 
+// prepare answers a fetch from the cache. site is the upstream alias the
+// request was routed to, which the repository overview splits by.
 func (s *Server) prepare(r *http.Request, rt route, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte) (*responseFile, string, bool, error) {
 	headers := s.headers(r)
-	return s.prepareObjects(r.Context(), scopeIdentity(rt.base, rt.repo), fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
+	return s.prepareObjects(r.Context(), scopeIdentity(rt.base, rt.repo), rt.id, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
 		return l.Ensure(ctx, rt.target(rt.repo).String(), headers, roots)
 	})
 }
 
-func (s *Server) PrepareSSH(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, source cache.HydrateSource) (*responseFile, string, bool, error) {
-	file, status, packHit, err := s.prepareObjects(ctx, identity, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
+func (s *Server) PrepareSSH(ctx context.Context, identity, site string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, source cache.HydrateSource) (*responseFile, string, bool, error) {
+	file, status, packHit, err := s.prepareObjects(ctx, identity, site, fetch, snapshot, data, func(ctx context.Context, l *cache.Lease, roots []string) (bool, error) {
 		return l.EnsureWith(ctx, roots, source)
 	})
 	if err == nil {
 		s.local.Add(1)
 	}
 	return file, status, packHit, err
+}
+
+// served records a fetch the cache is answering for the scope: the request
+// for the repository overview, and the reconciliation its snapshot arms.
+func (s *Server) served(scope, site string, snapshot protocol.Snapshot) {
+	s.store.Served(scope, site)
+	s.store.Reconcile(scope, snapshot)
 }
 
 // warmResponse wraps a stored pack entry for streaming. Concurrent
@@ -431,7 +440,7 @@ func (s *Server) serveShared(ctx context.Context, lease *cache.Lease, scope stri
 	return file, true, false, nil
 }
 
-func (s *Server) prepareObjects(ctx context.Context, identity string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (file *responseFile, status string, packHit bool, err error) {
+func (s *Server) prepareObjects(ctx context.Context, identity, site string, fetch protocol.Fetch, snapshot protocol.Snapshot, data []byte, ensure func(context.Context, *cache.Lease, []string) (bool, error)) (file *responseFile, status string, packHit bool, err error) {
 	started := time.Now()
 	phase := "pack_lookup"
 	ctx, cancel := context.WithTimeout(ctx, s.gitTimeout)
@@ -483,6 +492,10 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		if unpin := s.store.Pin(scope); unpin != nil {
 			if stored, err := s.store.LookupPack(scope, key); err == nil && stored != nil {
 				s.packHits.Add(1)
+				// The hit carries a snapshot from its authorization probe like
+				// any served fetch, so it arms the reconciliation too — before
+				// the pin goes, for the same reason as the gated paths.
+				s.served(scope, site, snapshot)
 				return s.warmResponse(ctx, scope, key, stored, unpin), "HIT", true, nil
 			}
 			unpin()
@@ -504,12 +517,17 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		logging.Logger(ctx, s.logger).DebugContext(ctx, "repository lease acquired", "queue_wait_ms", time.Since(leaseStarted).Milliseconds(), "cache_key", scope, "lease_mode", "shared")
 		phase = "shared_prepare"
 		file, served, packHit, abort := s.serveShared(ctx, lease, scope, key, failure, fetch, snapshot, data)
-		lease.Release()
 		if served {
 			// Every locally served fetch carries a complete live snapshot
 			// from its authorization probe; debounced, idle-only
-			// reconciliation follows it in the background.
-			s.store.Reconcile(scope, snapshot)
+			// reconciliation follows it in the background. It is armed while
+			// the lease is still held: a run preempted by this request waits
+			// for the scope to go idle, and must find this snapshot when it
+			// does, not the older one it was started for.
+			s.served(scope, site, snapshot)
+		}
+		lease.Release()
+		if served {
 			s.generations.done(failure)
 			return file, "HIT", packHit, nil
 		}
@@ -529,6 +547,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 		// Convert a stored hit's lease into a streaming pin: the response
 		// outlives the gate, but eviction cannot remove its scope mid-stream.
 		if file := s.storedUnderLease(ctx, scope, key, lease); file != nil {
+			s.served(scope, site, snapshot)
 			return file, "HIT", true, nil
 		}
 	}
@@ -592,7 +611,7 @@ func (s *Server) prepareObjects(ctx context.Context, identity string, fetch prot
 	// For full fetches the inline SyncRefs above already applied the
 	// snapshot, and the debounced call no-ops; partial and incremental
 	// generations schedule their prune through the background path.
-	s.store.Reconcile(scope, snapshot)
+	s.served(scope, site, snapshot)
 	status = "MISS"
 	if hit {
 		status = "HIT"

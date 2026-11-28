@@ -400,6 +400,10 @@ func parseCommand(command string) (gitCommand, error) {
 
 func (s *Server) route(user, repo string) (*origin, error) {
 	settings := s.cfg.SSH.Upstream
+	// The site is what the repository overview files the scope under: both
+	// frontends of a single-origin deployment share one, while SSH upstreams
+	// carry a prefix that keeps them apart from the HTTP aliases.
+	site := config.SingleUpstreamID
 	if s.cfg.SSH.Mode == config.ModeMulti {
 		id, path, ok := strings.Cut(repo, "/")
 		if !ok {
@@ -410,12 +414,14 @@ func (s *Server) route(user, repo string) (*origin, error) {
 			return nil, fmt.Errorf("unknown SSH upstream")
 		}
 		settings = &value
+		site = "ssh:" + id
 		repo = path
 	}
 	o, err := makeOrigin(*settings, user, repo, s.git, s.cfg.MaxCacheBytes, s.outboundProxy)
 	if err != nil {
 		return nil, err
 	}
+	o.site = site
 	// A single-origin deployment fronts the same upstream over both
 	// protocols: share its scope, keyed by the client-visible repository
 	// path. Explicit identities and multi-site routing keep their own keys.
@@ -567,7 +573,7 @@ func (s *Server) execute(ctx context.Context, ch ssh.Channel, o *origin, passwor
 		if scope.clock != nil {
 			scope.clock.busy.Store(true)
 		}
-		file, status, packHit, err := s.backend.PrepareSSH(ctx, o.identity(), fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
+		file, status, packHit, err := s.backend.PrepareSSH(ctx, o.identity(), o.site, fetch, refs, data, cache.HydrateSource(func(ctx context.Context, stage string, roots []string) error {
 			s.hydrations.Add(1)
 			return o.hydrate(ctx, password, stage, roots)
 		}))

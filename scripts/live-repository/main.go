@@ -145,15 +145,17 @@ func (s *suite) get(base, path string) []byte {
 	return data
 }
 
-func (s *suite) metrics(base string) map[string]int64 {
-	metrics := map[string]int64{}
+// metrics reads /metrics into samples named with their labels. The
+// counters are integers; the one ratio is not.
+func (s *suite) metrics(base string) map[string]float64 {
+	metrics := map[string]float64{}
 	for _, line := range strings.Split(string(s.get(base, "/metrics")), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Fields(line)
 		check(len(fields) == 2, "invalid metrics line")
-		value, err := strconv.ParseInt(fields[1], 10, 64)
+		value, err := strconv.ParseFloat(fields[1], 64)
 		must(err)
 		metrics[fields[0]] = value
 	}
@@ -481,7 +483,7 @@ func (s *suite) coldCache() map[string]any {
 	})
 	after := s.metrics(base)
 	check(after["gitcdn_hydrations_total"] == 1, "cold burst did not share one hydration")
-	check(after["gitcdn_local_requests_total"] == int64(s.args.concurrency), "cold requests did not all use local upload-pack")
+	check(after["gitcdn_local_requests_total"] == float64(s.args.concurrency), "cold requests did not all use local upload-pack")
 	misses := 0
 	for _, worker := range results["workers"].([]map[string]any) {
 		statuses := worker["cache_statuses"].([]string)

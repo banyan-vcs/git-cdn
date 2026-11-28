@@ -26,8 +26,10 @@ type origin struct {
 	settings       config.SSHUpstream
 	user, repo     string
 	sharedIdentity string
-	git            *nativegit.Runner
-	maxPack        int64
+	// site names the upstream for the repository overview.
+	site    string
+	git     *nativegit.Runner
+	maxPack int64
 	// proxy is the configured outbound proxy for origin connections, nil
 	// for a direct dial.
 	proxy *url.URL

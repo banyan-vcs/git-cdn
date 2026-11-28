@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Panels backed by metrics that /metrics exports today have data right after import. Panels with an information note wait for aggregate metrics the process does not export yet: the Repositories row, pack cache bytes, disk free, uptime, active repositories, top-10 share and the two backoff counts. To change the dashboard, edit it in Grafana, export the JSON and replace dashboards/git-cdn.json in the repository.",
+  "description": "Every panel reads the metrics that /metrics exports, and the Repositories row describes them in aggregate without naming a repository. To change the dashboard, edit it in Grafana, export the JSON and replace dashboards/git-cdn.json in the repository.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -198,7 +198,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Time since the process serving /metrics started, the shortest among the selected nodes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -879,7 +879,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Repositories currently holding cache bytes.",
+      "description": "Scopes the cache tracks, a scope being hydrated for the first time included.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -945,7 +945,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Bytes held by response-pack entries. They are part of the cache bytes: a full clone is served verbatim from its entry instead of being generated again.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1011,7 +1011,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "The smallest free space among the selected nodes. Requires an aggregate metric that the process does not export yet.",
+      "description": "The smallest free space among the selected nodes, on the volume the cache directory is on.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1074,7 +1074,7 @@
     },
     {
       "collapsed": false,
-      "description": "Every panel in this row needs aggregate metrics that the process does not export yet. They stay empty until it does.",
+      "description": "Repositories in aggregate, counted when /metrics is scraped: how many, how idle, how large and how they split over sites. No metric names a repository.",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -1083,7 +1083,7 @@
       },
       "id": 13,
       "panels": [],
-      "title": "Repositories — requires aggregate metrics",
+      "title": "Repositories",
       "type": "row"
     },
     {
@@ -1455,7 +1455,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Repositories holding cache bytes. Every chart of this row counts these.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1521,7 +1521,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "The largest repository on any of the selected nodes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1587,7 +1587,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "The largest per-node median among the selected nodes. Requires an aggregate metric that the process does not export yet.",
+      "description": "The largest per-node median among the selected nodes: on that node, half of the repositories are smaller.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1653,7 +1653,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "The largest per-node 90th percentile among the selected nodes. Requires an aggregate metric that the process does not export yet.",
+      "description": "The largest per-node 90th percentile among the selected nodes: on that node, one repository in ten is larger.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1719,7 +1719,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "One row per site on each instance. The site is the upstream alias from the multi-site configuration.",
+      "description": "One row per site on each instance. The site is the upstream alias from the multi-site configuration, default in single-site mode, and unknown for repositories cached before sites were recorded and not served since. Requests are fetches served from the cache since the process started.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2576,7 +2576,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 5,
         "x": 0,
         "y": 63
       },
@@ -2643,8 +2643,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 5,
+        "x": 5,
         "y": 63
       },
       "id": 32,
@@ -2687,7 +2687,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Repositories served at least once inside the window: one hour, 24 hours or seven days. The idle charts of the Repositories row count the same repositories from the other side.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2709,8 +2709,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 12,
+        "w": 9,
+        "x": 10,
         "y": 63
       },
       "id": 33,
@@ -2718,17 +2718,17 @@
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "horizontal",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
-          "values": false
+          "values": true
         },
         "showPercentChange": false,
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "targets": [
@@ -2738,7 +2738,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(gitcdn_active_repositories{job=~\"$job\",instance=~\"$instance\"})",
+          "expr": "sum by (window) (gitcdn_active_repositories{job=~\"$job\",instance=~\"$instance\"})",
           "instant": true,
           "legendFormat": "{{window}}",
           "range": false,
@@ -2753,7 +2753,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "The largest share among the selected nodes: of the fetches a node served in the last 24 hours — since the process started, when that is more recent — the part that went to its ten most requested repositories. 100% means ten repositories carry all of its traffic.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2777,8 +2777,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
+        "w": 5,
+        "x": 19,
         "y": 63
       },
       "id": 34,
@@ -3209,7 +3209,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Repositories whose last hydration failed and whose retry is still waiting. Their fetches pass through to the origin meanwhile.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3275,7 +3275,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requires an aggregate metric that the process does not export yet.",
+      "description": "Repositories whose last GC, repack or reconciliation failed and whose retry is still waiting.",
       "fieldConfig": {
         "defaults": {
           "color": {

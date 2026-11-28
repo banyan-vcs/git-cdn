@@ -34,6 +34,7 @@ type Server struct {
 	upstreams        map[string]*url.URL
 	githubAPI        *url.URL
 	logger           *slog.Logger
+	started          time.Time
 	gitTimeout       time.Duration
 	fetchTimeout     time.Duration
 	authTimeout      time.Duration
@@ -100,6 +101,7 @@ func New(c config.Config, logger *slog.Logger) (*Server, error) {
 		transport:      transport,
 		probeTransport: probeTransport,
 		logger:         logger,
+		started:        time.Now(),
 		upstreams:      make(map[string]*url.URL),
 		requests:       newRequestLimiter(c.MaxConcurrentRequests, c.MaxRequestsPerSecond),
 		responses:      &responseBudget{limit: c.MaxTempResponseBytes},
