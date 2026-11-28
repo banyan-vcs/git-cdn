@@ -1,20 +1,23 @@
 :root {
-  --bg: #fafafa;
-  --bg-soft: #f4f4f5;
+  --bg: #faf9f6;
+  --bg-soft: #f4f1ea;
   --card: #ffffff;
-  --ink: #18181b;
-  --ink-soft: #52525b;
-  --line: #e4e4e7;
-  --accent: #18181b;
+  --ink: #1c1917;
+  --ink-soft: #57534e;
+  --line: #e6e2d8;
+  --accent: #1c1917;
   --accent-ink: #000000;
   --on-accent: #ffffff;
-  --accent-soft: #f4f4f5;
-  --flow: #71717a;
-  --hit: #18181b;
+  --accent-soft: #f0ede4;
+  --flow: #78716c;
+  --hit: #1c1917;
+  --mark: #a16207;
+  --ctl: #a16207;
+  --sel: rgba(252, 216, 84, 0.45);
   --code-bg: #111113;
-  --code-ink: #e4e4e7;
-  --code-cmt: #71717a;
-  --shadow: 0 1px 2px rgba(24, 24, 27, 0.05), 0 10px 30px rgba(24, 24, 27, 0.07);
+  --code-ink: #e7e5e4;
+  --code-cmt: #78716c;
+  --shadow: 0 1px 2px rgba(41, 37, 36, 0.05), 0 10px 30px rgba(41, 37, 36, 0.07);
   color-scheme: light;
 }
 /* ---- automatic dark mode, and the manual override (the header toggle):
@@ -34,6 +37,9 @@
     --accent-soft: #1d1d20;
     --flow: #a1a1aa;
     --hit: #edede8;
+    --mark: #a1a1aa;
+    --ctl: #fcd854;
+    --sel: rgba(252, 216, 84, 0.22);
     --code-bg: #0a0a0b;
     --code-ink: #d4d4d8;
     --code-cmt: #71717a;
@@ -42,22 +48,25 @@
   }
 }
 html[data-theme="light"] {
-  --bg: #fafafa;
-  --bg-soft: #f4f4f5;
+  --bg: #faf9f6;
+  --bg-soft: #f4f1ea;
   --card: #ffffff;
-  --ink: #18181b;
-  --ink-soft: #52525b;
-  --line: #e4e4e7;
-  --accent: #18181b;
+  --ink: #1c1917;
+  --ink-soft: #57534e;
+  --line: #e6e2d8;
+  --accent: #1c1917;
   --accent-ink: #000000;
   --on-accent: #ffffff;
-  --accent-soft: #f4f4f5;
-  --flow: #71717a;
-  --hit: #18181b;
+  --accent-soft: #f0ede4;
+  --flow: #78716c;
+  --hit: #1c1917;
+  --mark: #a16207;
+  --ctl: #a16207;
+  --sel: rgba(252, 216, 84, 0.45);
   --code-bg: #111113;
-  --code-ink: #e4e4e7;
-  --code-cmt: #71717a;
-  --shadow: 0 1px 2px rgba(24, 24, 27, 0.05), 0 10px 30px rgba(24, 24, 27, 0.07);
+  --code-ink: #e7e5e4;
+  --code-cmt: #78716c;
+  --shadow: 0 1px 2px rgba(41, 37, 36, 0.05), 0 10px 30px rgba(41, 37, 36, 0.07);
   color-scheme: light;
 }
 html[data-theme="dark"] {
@@ -73,6 +82,9 @@ html[data-theme="dark"] {
   --accent-soft: #1d1d20;
   --flow: #a1a1aa;
   --hit: #edede8;
+  --mark: #a1a1aa;
+  --ctl: #fcd854;
+  --sel: rgba(252, 216, 84, 0.22);
   --code-bg: #0a0a0b;
   --code-ink: #d4d4d8;
   --code-cmt: #71717a;
@@ -91,6 +103,13 @@ body {
   color: var(--ink);
   font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
   -webkit-text-size-adjust: 100%;
+}
+::selection {
+  background: var(--sel);
+}
+:focus-visible {
+  outline: 2px solid var(--ctl);
+  outline-offset: 2px;
 }
 /* ---------- layout ---------- */
 .wrap {
@@ -142,13 +161,14 @@ a {
 }
 a:hover {
   text-decoration: underline;
+  text-decoration-color: var(--mark);
 }
 .kicker {
   display: block;
   font: 600 12px/1 ui-monospace, "Cascadia Code", Consolas, monospace;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--flow);
+  color: var(--mark);
   margin-bottom: 10px;
 }
 .section-head {
@@ -276,7 +296,13 @@ nav.main a:hover {
   background: var(--card);
 }
 .btn.ghost:hover {
-  border-color: var(--accent);
+  border-color: var(--ctl);
+}
+/* hover/focus feedback eases in instead of snapping */
+.btn,
+nav.main a,
+.theme-toggle {
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
 }
 /* the theme toggle in the header: an icon-only ghost button */
 .theme-toggle {
@@ -295,7 +321,7 @@ nav.main a:hover {
 }
 .theme-toggle:hover {
   color: var(--ink);
-  border-color: var(--accent);
+  border-color: var(--ctl);
 }
 .theme-toggle svg {
   width: 15px;
@@ -323,7 +349,7 @@ nav.main a:hover {
 }
 .card .glyph {
   font-size: 18px;
-  color: var(--flow);
+  color: var(--mark);
 }
 .card p {
   color: var(--ink-soft);
@@ -349,7 +375,7 @@ nav.main a:hover {
   position: absolute;
   top: -14px;
   left: 20px;
-  background: var(--accent);
+  background: var(--ctl);
   color: var(--on-accent);
   font: 700 12px/26px ui-monospace, Consolas, monospace;
   width: 26px;
